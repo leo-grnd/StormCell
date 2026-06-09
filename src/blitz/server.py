@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -58,7 +59,7 @@ class AppContext:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.state = SharedState()
+        self.state = SharedState(max_strikes_recent=config.analysis.recent_buffer)
         self.db = Database(Path(config.db.path))
         self.state.stats["logged_total"] = self.db.count()
         self.hub = Hub()
@@ -113,18 +114,27 @@ def create_app(config: Config) -> FastAPI:
             await ctx.hub.broadcast({"type": "strike", "data": strike.to_dict()})
 
     async def cells_loop() -> None:
-        """Recalcule les cellules à intervalle régulier et notifie les WS."""
+        """Recalcule les cellules à intervalle régulier et notifie les WS.
+
+        DBSCAN + tracking sont CPU-bound : on les exécute dans un thread pool
+        pour ne jamais bloquer l'event-loop (et donc les WebSockets).
+        """
+        loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(config.analysis.tick_seconds)
             try:
                 with ctx.state.lock:
                     recent = list(ctx.state.recent)
-                recent = filter_window(recent, config.analysis.cell_window_minutes)
-                with ctx.state.lock:
                     previous = dict(ctx.state.cells)
-                cells, next_id = update_cells(
-                    config.home, recent, previous, config.analysis, next_id=ctx._next_cell_id
-                )
+
+                def _recompute() -> tuple[dict, int]:
+                    windowed = filter_window(recent, config.analysis.cell_window_minutes)
+                    return update_cells(
+                        config.home, windowed, previous, config.analysis,
+                        next_id=ctx._next_cell_id,
+                    )
+
+                cells, next_id = await loop.run_in_executor(None, _recompute)
                 ctx._next_cell_id = next_id
                 with ctx.state.lock:
                     ctx.state.cells = cells
@@ -202,19 +212,20 @@ def create_app(config: Config) -> FastAPI:
         min_mds: int | None = None,
         limit: int = Query(100_000, le=500_000),
     ) -> dict:
-        rows = ctx.db.query_range(
+        rows = await run_in_threadpool(
+            ctx.db.query_range,
             from_unix=_iso_to_unix(date_from),
             to_unix=_iso_to_unix(date_to),
             max_distance_km=max_distance,
             min_mds=min_mds,
             limit=limit,
         )
-        bounds = ctx.db.date_bounds()
+        bounds = await run_in_threadpool(ctx.db.date_bounds)
         return {"strikes": rows, "bounds": {"min_unix": bounds[0], "max_unix": bounds[1]}}
 
     @app.get("/api/history/per_hour")
     async def get_per_hour(days: int = Query(30, ge=1, le=3650)) -> dict:
-        return {"per_hour": ctx.db.count_per_hour(days)}
+        return {"per_hour": await run_in_threadpool(ctx.db.count_per_hour, days)}
 
     @app.get("/api/cells")
     async def get_cells() -> dict:
@@ -228,6 +239,12 @@ def create_app(config: Config) -> FastAPI:
             await ws.send_json({"type": "stats", "data": ctx.state.snapshot_stats()})
             await ws.send_json(
                 {"type": "cells", "data": [c.to_dict() for c in ctx.state.snapshot_cells()]}
+            )
+            # Backfill : la fenêtre récente d'impacts pour que la carte ne soit pas vide.
+            window_s = config.analysis.cell_window_minutes * 60
+            recent = ctx.state.snapshot_recent_since(time.time() - window_s)
+            await ws.send_json(
+                {"type": "strikes_batch", "data": [s.to_dict() for s in recent[-5000:]]}
             )
             while True:
                 # On garde la connexion ouverte ; client peut ping via texte arbitraire.

@@ -14,6 +14,8 @@ nav { display: flex; gap: 0.3rem; }
 .dot-orange { background: #d29922; }
 .dot-red { background: #f85149; }
 .alert-toggle { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; color: #a8b0bd; }
+.tz-btn { background: none; color: #a8b0bd; border: 1px solid #2a2f38; border-radius: 4px; padding: 0.2rem 0.5rem; cursor: pointer; font: inherit; font-size: 0.8rem; }
+.tz-btn:hover { border-color: #1f6feb; color: #e3e6eb; }
 
 .tab-panel { display: none; flex: 1; min-height: 0; }
 .tab-panel.active { display: flex; }
@@ -48,6 +50,15 @@ aside.sidebar { width: 340px; padding: 0.8rem 1rem; overflow: auto; background: 
 .badge-up { background: #f85149; color: white; }
 .badge-down { background: #2ea043; color: white; }
 .badge-stable { background: #444c5a; color: #ccc; }
+.badge-jump { background: #f85149; color: white; font-weight: 700; }
+.sev { display: inline-block; min-width: 1.6em; text-align: center; padding: 0 4px; font-size: 0.72rem; font-weight: 700; color: #0f1116; border-radius: 3px; }
+
+/* Cellule avec lightning jump : bord rouge pulsant pour attirer l'œil */
+.cell-card.severe { border-left-color: #f85149; animation: pulse-border 1.4s ease-in-out infinite; }
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.0); }
+  50% { box-shadow: 0 0 8px 1px rgba(248, 81, 73, 0.55); }
+}
 
 table#strikes-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 #strikes-table th { text-align: left; padding: 0.2rem 0.3rem; color: #8b95a7; border-bottom: 1px solid #2a2f38; }

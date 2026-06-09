@@ -13,7 +13,18 @@ const state = {
   cells: new Map(),
   uptimeStart: Date.now(),
   alertEnabled: localStorage.getItem("alert-sound") === "1",
+  useLocal: localStorage.getItem("tz-local") !== "0",   // affichage heure locale par défaut
 };
+
+// ── Temps : affichage local (défaut) ou UTC, togglable ───────────────────────
+function fmtClock(unix) {
+  const d = new Date(unix * 1000);
+  return state.useLocal ? d.toTimeString().slice(0, 8) : d.toISOString().substr(11, 8);
+}
+function fmtDateTime(unix) {
+  const d = new Date(unix * 1000);
+  return state.useLocal ? d.toLocaleString() : d.toUTCString();
+}
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 $$(".tab").forEach((t) => t.addEventListener("click", () => {
@@ -31,7 +42,7 @@ $$(".tab").forEach((t) => t.addEventListener("click", () => {
 const TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const TILE_OPTS = { attribution: "© OpenStreetMap", maxZoom: 18 };
 
-const mapLive = L.map("map-live", { zoomControl: true }).setView([44.24, 4.72], 8);
+const mapLive = L.map("map-live", { zoomControl: true, preferCanvas: true }).setView([44.24, 4.72], 8);
 L.tileLayer(TILE_URL, TILE_OPTS).addTo(mapLive);
 state.strikeLayer = L.layerGroup().addTo(mapLive);
 state.cellLayer = L.layerGroup().addTo(mapLive);
@@ -54,38 +65,70 @@ function colorClass(d) {
   if (d < 250) return "color-yellow";
   return "color-green";
 }
+// Couleur d'une cellule selon son indice de sévérité (0..5).
+function severityColor(sev) {
+  if (sev >= 4) return "#f85149";    // rouge — sévère
+  if (sev >= 2.5) return "#ea8c2c";  // orange
+  if (sev >= 1) return "#d29922";    // jaune
+  return "#3fb950";                   // vert — faible
+}
 
-// ── Affichage live ──────────────────────────────────────────────────────────
-function strikeIcon(distance, ageMin) {
+// ── Affichage live (canvas circleMarker — tient des milliers d'impacts) ──────
+// Style d'un impact : taille selon proximité, opacité décroissante avec l'âge.
+function strikeStyle(distance, ageMin) {
   const opacity = Math.max(0.15, 1 - ageMin / 30);
-  const size = distance < 15 ? 12 : 8;
-  return L.divIcon({
-    className: "",
-    html: `<div class="strike-marker" style="width:${size}px;height:${size}px;background:${colorForDistance(distance)};opacity:${opacity}"></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
+  const c = colorForDistance(distance);
+  return {
+    radius: distance < 15 ? 6 : 4,
+    color: c,
+    fillColor: c,
+    weight: 1,
+    opacity,
+    fillOpacity: opacity * 0.7,
+  };
+}
+
+function strikePopupHtml(s) {
+  return `<b>${fmtDateTime(s.ts_unix)}</b><br>` +
+    `${s.distance_km.toFixed(1)} km, azimut ${s.bearing_deg.toFixed(0)}°<br>` +
+    `${s.mds ?? "?"} stations`;
+}
+
+// Trace un impact (sans toucher tableau/alerte) — réutilisé par le backfill.
+function plotStrike(s) {
+  const ageMin = Math.max(0, (Date.now() / 1000 - s.ts_unix) / 60);
+  const m = L.circleMarker([s.lat, s.lon], strikeStyle(s.distance_km, ageMin));
+  m.bindPopup(strikePopupHtml(s));
+  m.addTo(state.strikeLayer);
+  m._ts = s.ts_unix;
+  m._dist = s.distance_km;
+  return m;
 }
 
 function addStrike(s) {
   state.recentStrikes.push(s);
-  if (state.recentStrikes.length > 2000) state.recentStrikes.shift();
-  const m = L.marker([s.lat, s.lon], { icon: strikeIcon(s.distance_km, 0) });
-  m.bindPopup(
-    `<b>${new Date(s.ts_unix * 1000).toUTCString()}</b><br>` +
-    `${s.distance_km.toFixed(1)} km, azimut ${s.bearing_deg.toFixed(0)}°<br>` +
-    `${s.mds ?? "?"} stations`
-  );
-  m.addTo(state.strikeLayer);
-  m._ts = s.ts_unix;
+  if (state.recentStrikes.length > 5000) state.recentStrikes.shift();
+  plotStrike(s);
   prependStrikeRow(s);
   maybeAlert(s);
+}
+
+// Backfill : à la (re)connexion WS, on reçoit la fenêtre récente d'un coup.
+function addStrikesBatch(arr) {
+  state.strikeLayer.clearLayers();
+  $("#strikes-table tbody").innerHTML = "";
+  state.recentStrikes = [];
+  arr.forEach((s) => { state.recentStrikes.push(s); plotStrike(s); });
+  if (state.recentStrikes.length > 5000) {
+    state.recentStrikes = state.recentStrikes.slice(-5000);
+  }
+  arr.slice(-30).forEach((s) => prependStrikeRow(s));
 }
 
 function prependStrikeRow(s) {
   const tbody = $("#strikes-table tbody");
   const tr = document.createElement("tr");
-  const t = new Date(s.ts_unix * 1000).toISOString().substr(11, 8);
+  const t = fmtClock(s.ts_unix);
   const delay = (s.distance_km * 1000) / 340;
   const delayStr = delay < 120 ? `${delay.toFixed(0)} s` : `${(delay / 60).toFixed(1)} min`;
   tr.innerHTML = `
@@ -110,7 +153,7 @@ function fadeOldMarkers() {
     if (age > 30 * 60) {
       state.strikeLayer.removeLayer(m);
     } else {
-      m.setIcon(strikeIcon(m.options?.distance_km ?? 50, age / 60));
+      m.setStyle(strikeStyle(m._dist ?? 50, age / 60));
     }
   });
 }
@@ -149,15 +192,22 @@ function selectCell(id) {
 function cellPopupHtml(c) {
   const vel = c.velocity_kmh ? `${c.velocity_kmh.toFixed(0)} km/h cap ${c.heading_deg?.toFixed(0) ?? "?"}°` : "immobile / inconnu";
   const eta = c.eta_minutes != null
-    ? `ETA ${c.eta_minutes.toFixed(0)}${c.eta_uncertainty_min ? `±${c.eta_uncertainty_min.toFixed(0)}` : ""} min · ${c.closest_approach_km.toFixed(1)} km`
+    ? `ETA centroïde ${c.eta_minutes.toFixed(0)}${c.eta_uncertainty_min ? `±${c.eta_uncertainty_min.toFixed(0)}` : ""} min · ${c.closest_approach_km.toFixed(1)} km`
     : ((c.misses ?? 0) > 0 ? `cellule fantôme (${c.misses}×)` : "ne s'approche pas");
+  const etaEdge = c.eta_strike_minutes != null
+    ? `<br><i>⚡ foudre dans l'anneau dans ~${c.eta_strike_minutes.toFixed(0)} min</i>` : "";
+  const prob = c.strike_probability
+    ? `<br>proba de coup ${Math.round(c.strike_probability * 100)}%` : "";
+  const jump = c.jump_detected
+    ? '<br><b style="color:#f85149">⚠ intensification rapide (jump)</b>' : "";
+  const lineage = c.parent_id ? ` <small>(split #${c.parent_id})</small>` : "";
   const trends = `intensité ${c.intensity_trend ?? "?"} · rayon ${c.radius_trend ?? "?"}`;
-  return `<b>Cellule #${c.cell_id}</b><br>
-    ${c.strikes_count} impacts · rayon ${c.radius_km.toFixed(1)} km<br>
+  return `<b>Cellule #${c.cell_id}</b>${lineage}<br>
+    ${c.strikes_count} impacts · ${c.flash_rate_per_min != null ? c.flash_rate_per_min.toFixed(0) : "?"}/min · rayon ${c.radius_km.toFixed(1)} km<br>
+    sévérité ${(c.severity ?? 0).toFixed(1)}/5 · confiance ${Math.round((c.confidence ?? 0) * 100)}%<br>
     ${vel}<br>
-    confiance ${Math.round((c.confidence ?? 0) * 100)}%<br>
     ${trends}<br>
-    <i>${eta}</i><br>
+    <i>${eta}</i>${etaEdge}${prob}${jump}<br>
     <small>${c.centroid.lat.toFixed(3)}°, ${c.centroid.lon.toFixed(3)}°</small>`;
 }
 
@@ -173,17 +223,19 @@ function renderCells(cells) {
   // Pondération 60% confiance / 40% taille → "le plus haut et le plus gros en premier".
   // Les #cell_id restent inchangés (assignés à la détection initiale dans analysis.py).
   const maxStrikes = Math.max(1, ...cells.map((c) => c.strikes_count));
-  const score = (c) => 0.6 * (c.confidence ?? 0) + 0.4 * (c.strikes_count / maxStrikes);
+  // Tri composite : confiance + taille + sévérité → les cellules dangereuses en haut.
+  const score = (c) => 0.4 * (c.confidence ?? 0) + 0.3 * (c.strikes_count / maxStrikes) + 0.3 * ((c.severity ?? 0) / 5);
   cells.sort((a, b) => score(b) - score(a));
   list.innerHTML = "";
   cells.forEach((c) => {
     const isGhost = (c.misses ?? 0) > 0;
     // Cercle de la cellule
+    const sevCol = severityColor(c.severity ?? 0);
     const circle = L.circle([c.centroid.lat, c.centroid.lon], {
       radius: Math.max(c.radius_km, 2) * 1000,
-      color: c.eta_minutes != null ? "#f85149" : "#d29922",
-      weight: 2,
-      fillOpacity: isGhost ? 0.03 : 0.1,
+      color: sevCol,
+      weight: c.jump_detected ? 4 : 2,
+      fillOpacity: isGhost ? 0.03 : (c.jump_detected ? 0.2 : 0.1),
       dashArray: isGhost ? "4,4" : null,
     });
     circle.bindPopup(cellPopupHtml(c));
@@ -223,16 +275,23 @@ function renderCells(cells) {
     const card = document.createElement("div");
     card.className = "cell-card"
       + (c.eta_minutes != null ? " approaching" : "")
+      + (c.jump_detected ? " severe" : "")
       + (isGhost ? " ghost" : "");
     const vel = c.velocity_kmh ? `${c.velocity_kmh.toFixed(0)} km/h` : "—";
     const headingStr = c.heading_deg != null ? c.heading_deg.toFixed(0) + "°" : "—";
-    const etaStr = c.eta_minutes != null
-      ? `ETA ${c.eta_minutes.toFixed(0)}${c.eta_uncertainty_min ? `±${c.eta_uncertainty_min.toFixed(0)}` : ""} min · ${c.closest_approach_km.toFixed(1)} km`
-      : (isGhost ? `perdue (${c.misses}×)` : "s'éloigne / inconnue");
-    const conf = c.confidence != null ? `${Math.round(c.confidence * 100)}%` : "—";
+    const prob = c.strike_probability ? ` · ${Math.round(c.strike_probability * 100)}%` : "";
+    const etaStr = c.eta_strike_minutes != null
+      ? `⚡ ~${c.eta_strike_minutes.toFixed(0)} min${prob}`
+      : (c.eta_minutes != null
+          ? `ETA ${c.eta_minutes.toFixed(0)}${c.eta_uncertainty_min ? `±${c.eta_uncertainty_min.toFixed(0)}` : ""} min`
+          : (isGhost ? `perdue (${c.misses}×)` : "s'éloigne / inconnue"));
+    const sev = (c.severity ?? 0).toFixed(1);
+    const sevBadge = `<span class="sev" style="background:${severityColor(c.severity ?? 0)}">${sev}</span>`;
+    const jumpBadge = c.jump_detected ? '<span class="badge badge-jump">⚠</span>' : "";
+    const lineage = c.parent_id ? ` <span class="muted">⑂${c.parent_id}</span>` : "";
     card.innerHTML = `
-      <div class="row"><b>Cellule #${c.cell_id}</b><span>${c.strikes_count} impacts ${trendBadge(c.intensity_trend)}</span></div>
-      <div class="row small"><span>${vel} cap ${headingStr}</span><span>conf. ${conf}</span></div>
+      <div class="row"><b>Cellule #${c.cell_id}${lineage}</b><span>${c.strikes_count} impacts ${trendBadge(c.intensity_trend)}</span></div>
+      <div class="row small"><span>${vel} cap ${headingStr}</span><span>sév ${sevBadge} ${jumpBadge}</span></div>
       <div class="row small"><span>rayon ${c.radius_km.toFixed(1)} km ${trendBadge(c.radius_trend)}</span><span>${etaStr}</span></div>`;
     card.addEventListener("click", () => focusCell(c.cell_id));
     list.appendChild(card);
@@ -265,14 +324,48 @@ $("#alert-sound").checked = state.alertEnabled;
 $("#alert-sound").addEventListener("change", (e) => {
   state.alertEnabled = e.target.checked;
   localStorage.setItem("alert-sound", state.alertEnabled ? "1" : "0");
+  if (state.alertEnabled) ensureAudio();   // débloque l'audio via le geste utilisateur
 });
+
+// ── Toggle fuseau (local ⇄ UTC) ──────────────────────────────────────────────
+const tzBtn = $("#tz-toggle");
+function refreshTzBtn() { if (tzBtn) tzBtn.textContent = state.useLocal ? "Local" : "UTC"; }
+refreshTzBtn();
+if (tzBtn) tzBtn.addEventListener("click", () => {
+  state.useLocal = !state.useLocal;
+  localStorage.setItem("tz-local", state.useLocal ? "1" : "0");
+  refreshTzBtn();
+});
+
+// Bip d'alerte synthétisé via WebAudio (aucun fichier audio à charger).
+let _audioCtx = null;
+function ensureAudio() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_audioCtx.state === "suspended") _audioCtx.resume();
+  return _audioCtx;
+}
+function playBeep() {
+  try {
+    const ctx = ensureAudio();
+    const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, t0);
+    osc.frequency.setValueAtTime(660, t0 + 0.12);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.36);
+  } catch (e) { /* audio indisponible */ }
+}
 
 function maybeAlert(s) {
   if (!state.alertEnabled || !state.config) return;
   if (s.distance_km <= state.config.alert_distance_km) {
-    const a = $("#alert-audio");
-    a.currentTime = 0;
-    a.play().catch(() => {});
+    playBeep();
   }
 }
 
@@ -333,6 +426,7 @@ function connectWS() {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === "strike") addStrike(msg.data);
+      else if (msg.type === "strikes_batch") addStrikesBatch(msg.data);
       else if (msg.type === "cells") renderCells(msg.data);
       else if (msg.type === "stats") updateStats(msg.data);
     } catch (err) { console.error(err); }
@@ -356,8 +450,10 @@ connectWS();
 
 // ── Historique ──────────────────────────────────────────────────────────────
 function fmtDateInput(unix) {
+  // Valeur pour <input datetime-local> : heure LOCALE (ce que le widget attend).
   const d = new Date(unix * 1000);
-  return d.toISOString().slice(0, 16);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 async function initHistDefaults() {
@@ -376,8 +472,9 @@ let histStrikes = [];
 
 async function loadHistory() {
   const params = new URLSearchParams();
-  if ($("#hist-from").value) params.set("from", $("#hist-from").value);
-  if ($("#hist-to").value) params.set("to", $("#hist-to").value);
+  // Les <input datetime-local> sont en heure locale → on convertit en ISO UTC.
+  if ($("#hist-from").value) params.set("from", new Date($("#hist-from").value).toISOString());
+  if ($("#hist-to").value) params.set("to", new Date($("#hist-to").value).toISOString());
   if ($("#hist-dist").value) params.set("max_distance", $("#hist-dist").value);
   if ($("#hist-mds").value) params.set("min_mds", $("#hist-mds").value);
   const r = await fetch("/api/strikes/history?" + params);

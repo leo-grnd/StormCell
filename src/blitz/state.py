@@ -54,6 +54,20 @@ class Cell:
     radius_trend: Optional[str] = None        # idem
     confidence: float = 0.0                    # 0..1 (qualité du tracking/prédiction)
     misses: int = 0                            # ticks consécutifs sans détection (persistance)
+    # ── prédiction avancée (Vague 2) ─────────────────────────────────────────
+    flash_rate_per_min: Optional[float] = None    # taux d'éclairs instantané (fenêtre courte)
+    eta_strike_minutes: Optional[float] = None    # temps avant que la foudre entre dans l'anneau d'alerte
+    strike_probability: Optional[float] = None    # 0..1 : proba de toucher HOME dans l'horizon nowcast
+    jump_detected: bool = False                   # flambée du taux d'éclairs (signal orage sévère)
+    severity: float = 0.0                         # indice de sévérité 0..5
+    parent_id: Optional[int] = None               # cellule mère si issue d'un split
+    merged_from: list[int] = field(default_factory=list)  # ids fusionnés dans cette cellule
+    # ── état interne du filtre de Kalman (non sérialisé) ─────────────────────
+    ref_lat: Optional[float] = None               # origine du repère local (fixe sur la vie de la cellule)
+    ref_lon: Optional[float] = None
+    kf_x: Optional[list[float]] = None            # état [x, y, vx, vy] (km, km/s)
+    kf_p: Optional[list[list[float]]] = None      # covariance 4x4
+    kf_updates: int = 0                           # nb de mises à jour du filtre
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,16 +76,23 @@ class Cell:
             "radius_km": self.radius_km,
             "strikes_count": self.strikes_count,
             "intensity_per_min": self.intensity_per_min,
+            "flash_rate_per_min": self.flash_rate_per_min,
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
             "velocity_kmh": self.velocity_kmh,
             "heading_deg": self.heading_deg,
             "eta_minutes": self.eta_minutes,
+            "eta_strike_minutes": self.eta_strike_minutes,
             "eta_uncertainty_min": self.eta_uncertainty_min,
             "closest_approach_km": self.closest_approach_km,
+            "strike_probability": self.strike_probability,
             "intensity_trend": self.intensity_trend,
             "radius_trend": self.radius_trend,
+            "jump_detected": self.jump_detected,
+            "severity": round(self.severity, 1),
             "confidence": round(self.confidence, 3),
+            "parent_id": self.parent_id,
+            "merged_from": self.merged_from,
             "misses": self.misses,
         }
 

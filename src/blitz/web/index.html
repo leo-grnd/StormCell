@@ -19,6 +19,7 @@
   <div class="status">
     <span id="mqtt-dot" class="dot dot-red" title="État MQTT"></span>
     <span id="mqtt-text">…</span>
+    <button id="tz-toggle" class="tz-btn" title="Basculer heure locale / UTC">Local</button>
     <label class="alert-toggle">
       <input type="checkbox" id="alert-sound"> son d'alerte
     </label>
@@ -65,8 +66,6 @@
     <canvas id="hist-chart" height="120"></canvas>
   </div>
 </section>
-
-<audio id="alert-audio" preload="auto" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="></audio>
 
 <script src="/static/app.js"></script>
 </body>

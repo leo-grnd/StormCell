@@ -1,12 +1,23 @@
-"""Persistance SQLite des impacts."""
+"""Persistance SQLite des impacts.
+
+Thread-safety : une seule connexion est partagée entre le thread réseau MQTT
+(écritures), les threads du pool FastAPI (lectures) et un thread flusher interne.
+Tous les accès à la connexion passent par `self._lock`.
+
+Écritures batchées : `insert_strike` met en tampon et un `executemany` est émis
+soit quand le tampon atteint `flush_threshold`, soit toutes les `flush_interval`
+secondes (thread flusher), au lieu d'un `commit` par impact dans le thread MQTT.
+"""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +38,25 @@ CREATE INDEX IF NOT EXISTS idx_strikes_ts   ON strikes(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_strikes_dist ON strikes(distance_km);
 """
 
+_INSERT_SQL = (
+    "INSERT INTO strikes "
+    "(ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
 
 class Database:
-    """Wrapper sqlite3 minimal, partagé entre threads grâce à check_same_thread=False."""
+    """Wrapper sqlite3, sérialisé par un verrou, avec écritures batchées."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        flush_interval: float = 2.0,
+        flush_threshold: int = 200,
+    ) -> None:
         self.path = path
+        self._lock = threading.Lock()
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -40,10 +64,14 @@ class Database:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    def count(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) FROM strikes").fetchone()
-        return int(row[0])
+        self._write_buf: list[tuple] = []
+        self._flush_threshold = flush_threshold
+        self._flush_interval = flush_interval
+        self._closed = False
+        self._flusher = threading.Thread(target=self._flush_loop, name="db-flusher", daemon=True)
+        self._flusher.start()
 
+    # ── écritures (batch) ────────────────────────────────────────────────────
     def insert_strike(
         self,
         ts_unix: float,
@@ -56,16 +84,41 @@ class Database:
         home_lon: float,
     ) -> None:
         ts_utc = datetime.fromtimestamp(ts_unix, tz=timezone.utc).isoformat()
+        row = (ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon)
+        with self._lock:
+            self._write_buf.append(row)
+            if len(self._write_buf) >= self._flush_threshold:
+                self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        """Écrit le tampon. À appeler avec `self._lock` déjà acquis."""
+        if not self._write_buf:
+            return
         try:
-            self.conn.execute(
-                "INSERT INTO strikes "
-                "(ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon),
-            )
+            self.conn.executemany(_INSERT_SQL, self._write_buf)
             self.conn.commit()
+            self._write_buf.clear()
         except sqlite3.Error:
-            logger.exception("Erreur d'insertion SQLite")
+            logger.exception("Erreur de flush SQLite (%d lignes en attente)", len(self._write_buf))
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_loop(self) -> None:
+        while not self._closed:
+            time.sleep(self._flush_interval)
+            try:
+                self.flush()
+            except Exception:
+                logger.exception("Erreur dans le thread flusher SQLite")
+
+    # ── lectures (flush d'abord pour voir les écritures récentes) ────────────
+    def count(self) -> int:
+        with self._lock:
+            self._flush_locked()
+            row = self.conn.execute("SELECT COUNT(*) FROM strikes").fetchone()
+        return int(row[0])
 
     def query_range(
         self,
@@ -93,7 +146,9 @@ class Database:
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         sql = f"SELECT * FROM strikes {where} ORDER BY ts_unix ASC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(sql, params).fetchall()
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def count_per_hour(self, days: int = 30) -> list[dict[str, Any]]:
@@ -105,15 +160,22 @@ class Database:
             GROUP BY hour
             ORDER BY hour ASC
         """
-        rows = self.conn.execute(sql, (f"-{int(days)} days",)).fetchall()
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (f"-{int(days)} days",)).fetchall()
         return [dict(r) for r in rows]
 
     def date_bounds(self) -> tuple[float | None, float | None]:
-        row = self.conn.execute("SELECT MIN(ts_unix), MAX(ts_unix) FROM strikes").fetchone()
+        with self._lock:
+            self._flush_locked()
+            row = self.conn.execute("SELECT MIN(ts_unix), MAX(ts_unix) FROM strikes").fetchone()
         return (row[0], row[1])
 
     def close(self) -> None:
+        self._closed = True
         try:
-            self.conn.close()
+            with self._lock:
+                self._flush_locked()
+                self.conn.close()
         except sqlite3.Error:
             logger.exception("Erreur à la fermeture SQLite")

@@ -152,6 +152,55 @@ class GlobalDetectionTests(unittest.TestCase):
         self.assertIsNone(c.eta_minutes)
 
 
+class EdgeEtaTests(unittest.TestCase):
+    def test_strike_eta_precedes_centroid_eta(self):
+        """Une cellule qui fonce sur HOME doit avoir un ETA-bord ≤ ETA-centroïde."""
+        prev: dict = {}
+        next_id = 1
+        cells: dict = {}
+        ts = 0.0
+        for tick in range(6):
+            cx = 60.0 - tick * 6.0  # se rapproche vite de HOME (origine), plein ouest
+            strikes = [
+                make_strike(cx + 0.5, 0.2, ts),
+                make_strike(cx - 0.5, -0.2, ts + 1),
+                make_strike(cx, 0.0, ts + 2),
+                make_strike(cx + 0.3, 0.6, ts + 3),
+            ]
+            cells, next_id = update_cells(HOME, strikes, previous=prev, cfg=CFG, now=ts + 5, next_id=next_id)
+            prev = cells
+            ts += 60
+        cell = next(iter(cells.values()))
+        self.assertIsNotNone(cell.eta_minutes)
+        self.assertIsNotNone(cell.eta_strike_minutes)
+        self.assertLessEqual(cell.eta_strike_minutes, cell.eta_minutes + 1e-6)
+        # proba de coup définie et dans [0,1]
+        self.assertIsNotNone(cell.strike_probability)
+        self.assertTrue(0.0 <= cell.strike_probability <= 1.0)
+        # taux d'éclairs instantané renseigné
+        self.assertIsNotNone(cell.flash_rate_per_min)
+
+
+class LineageTests(unittest.TestCase):
+    def test_split_sets_parent_id(self):
+        # tick 1 : une cellule unique autour de (20, 0)
+        ts = 1_000_000.0
+        strikes1 = [make_strike(20 + (i - 2) * 0.5, 0.0, ts + i) for i in range(5)]
+        cells1, next_id = update_cells(HOME, strikes1, previous={}, cfg=CFG, now=ts + 10, next_id=1)
+        self.assertEqual(len(cells1), 1)
+        parent_id = next(iter(cells1))
+
+        # tick 2 : deux clusters distincts — l'un continue (20,0), l'autre naît (20,12)
+        ts += 60
+        strikes2 = [make_strike(20 + (i - 2) * 0.5, 0.0, ts + i) for i in range(5)]
+        strikes2 += [make_strike(20 + (i - 2) * 0.5, 12.0, ts + i) for i in range(5)]
+        cells2, _ = update_cells(HOME, strikes2, previous=cells1, cfg=CFG, now=ts + 10, next_id=next_id)
+        self.assertEqual(len(cells2), 2)
+        # la cellule mère garde son id ; la nouvelle pointe vers elle
+        new_cell = next(c for cid, c in cells2.items() if cid != parent_id)
+        self.assertEqual(new_cell.parent_id, parent_id)
+
+
 class PersistenceTests(unittest.TestCase):
     """La persistance fade-out doit garder une cellule sur quelques ticks creux."""
 

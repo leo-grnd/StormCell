@@ -52,6 +52,13 @@ class AnalysisConfig:
     eta_max_radius_km: float = 500.0
     max_strikes_for_clustering: int = 20_000
     motion_history_seconds: float = 900.0
+    recent_buffer: int = 50_000  # impacts gardés en mémoire vive (doit couvrir la fenêtre en gros orage)
+    # ── Vague 2 : tracking Kalman + nowcast ──────────────────────────────────
+    kf_meas_noise_km: float = 2.5        # bruit de mesure du centroïde (km)
+    kf_process_accel: float = 2e-5       # bruit de process : accélération (km/s², écart-type)
+    jump_window_min: float = 2.0         # fenêtre du taux d'éclairs instantané
+    strike_ring_km: float = 15.0         # anneau « foudre arrivée » pour l'ETA au bord
+    nowcast_horizon_min: float = 30.0    # horizon de la proba de coup sur HOME
 
 
 @dataclass

@@ -41,7 +41,7 @@ def cmd_tui(cfg: Config) -> int:
     from .state import SharedState, Strike
 
     console = Console()
-    state = SharedState()
+    state = SharedState(max_strikes_recent=cfg.analysis.recent_buffer)
     db = Database(Path(cfg.db.path))
     state.stats["logged_total"] = db.count()
     console.log(f"[green]✓ Base SQLite : {cfg.db.path} ({state.stats['logged_total']} impacts)")
