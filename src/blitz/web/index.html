@@ -15,6 +15,7 @@
   <nav>
     <button class="tab active" data-tab="live">Live</button>
     <button class="tab" data-tab="history">Historique</button>
+    <button class="tab" data-tab="analyse">Analyse</button>
   </nav>
   <div class="status">
     <span id="mqtt-dot" class="dot dot-red" title="État MQTT"></span>
@@ -65,6 +66,37 @@
     <h3>Impacts par heure</h3>
     <canvas id="hist-chart" height="120"></canvas>
   </div>
+</section>
+
+<section id="tab-analyse" class="tab-panel">
+  <div class="hist-controls">
+    <label>Période (jours) <input type="number" id="an-days" min="1" max="3650" value="30"></label>
+    <button id="an-load">Actualiser</button>
+    <a id="dl-csv" class="dl-btn" download href="#">⬇ impacts CSV</a>
+    <a id="dl-geojson" class="dl-btn" download href="#">⬇ impacts GeoJSON</a>
+    <a id="dl-tracks" class="dl-btn" download href="#">⬇ trajectoires GeoJSON</a>
+  </div>
+
+  <h3 class="an-h">Fiabilité des prédictions <span class="muted" id="skill-sub"></span></h3>
+  <div id="skill-cards" class="skill-cards"></div>
+  <table id="pred-table" class="an-table">
+    <thead><tr><th>Émise</th><th>Cellule</th><th>ETA prévu</th><th>Proba</th><th>Résultat</th><th>Erreur ETA</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h3 class="an-h">Activité</h3>
+  <div class="charts-grid">
+    <div class="chart-card"><h4>Cycle diurne (heure UTC)</h4><canvas id="ch-hour" height="130"></canvas></div>
+    <div class="chart-card"><h4>Par jour de semaine</h4><canvas id="ch-week" height="130"></canvas></div>
+    <div class="chart-card"><h4>Distance des impacts</h4><canvas id="ch-dist" height="130"></canvas></div>
+    <div class="chart-card"><h4>Rose des impacts</h4><div id="ch-rose" class="rose-wrap"></div></div>
+  </div>
+
+  <h3 class="an-h">Catalogue d'orages <span class="muted">(clic = tracer la trajectoire)</span></h3>
+  <table id="catalog-table" class="an-table">
+    <thead><tr><th>#</th><th>Début</th><th>Durée</th><th>Impacts</th><th>Sév. max</th><th>Pic /min</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <script src="/static/app.js"></script>

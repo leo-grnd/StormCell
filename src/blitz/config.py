@@ -62,6 +62,13 @@ class AnalysisConfig:
 
 
 @dataclass
+class PredictConfig:
+    min_probability: float = 0.3        # seuil de proba pour journaliser une prédiction
+    verify_tolerance_min: float = 10.0  # fenêtre d'appariement prédiction ↔ arrivée
+    arrival_gap_min: float = 20.0       # écart séparant deux événements d'arrivée
+
+
+@dataclass
 class LogConfig:
     file: str = "blitz.log"
     max_bytes: int = 10 * 1024 * 1024
@@ -76,6 +83,7 @@ class Config:
     db: DbConfig = field(default_factory=DbConfig)
     web: WebConfig = field(default_factory=WebConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    predict: PredictConfig = field(default_factory=PredictConfig)
     log: LogConfig = field(default_factory=LogConfig)
     source_path: Path | None = None
 
@@ -116,6 +124,7 @@ def load_config(path: Path | str | None = None) -> Config:
         "db": cfg.db,
         "web": cfg.web,
         "analysis": cfg.analysis,
+        "predict": cfg.predict,
         "log": cfg.log,
     }
     for name, section in section_map.items():

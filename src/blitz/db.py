@@ -36,6 +36,57 @@ CREATE TABLE IF NOT EXISTS strikes (
 );
 CREATE INDEX IF NOT EXISTS idx_strikes_ts   ON strikes(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_strikes_dist ON strikes(distance_km);
+
+-- Catalogue des cellules orageuses détectées (une ligne par cellule et par run).
+CREATE TABLE IF NOT EXISTS cells (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT    NOT NULL,   -- identifiant du process (les cell_id repartent à 1 par run)
+    cell_id         INTEGER NOT NULL,
+    first_seen      REAL    NOT NULL,
+    last_seen       REAL    NOT NULL,
+    peak_flash_rate REAL,
+    max_radius_km   REAL,
+    max_severity    REAL,
+    total_strikes   INTEGER,
+    parent_id       INTEGER,
+    UNIQUE(run_id, cell_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cells_lastseen ON cells(last_seen);
+
+-- Points de trajectoire (un par tick où la cellule est vivante).
+CREATE TABLE IF NOT EXISTS cell_track (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id    TEXT    NOT NULL,
+    cell_id   INTEGER NOT NULL,
+    ts_unix   REAL    NOT NULL,
+    lat       REAL    NOT NULL,
+    lon       REAL    NOT NULL,
+    radius_km REAL,
+    strikes_count       INTEGER,
+    flash_rate_per_min  REAL,
+    velocity_kmh        REAL,
+    heading_deg         REAL,
+    severity            REAL,
+    eta_minutes         REAL,
+    eta_strike_minutes  REAL,
+    closest_approach_km REAL,
+    strike_probability  REAL,
+    jump_detected       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_celltrack ON cell_track(run_id, cell_id, ts_unix);
+
+-- Journal des prédictions émises (pour la vérification / skill score).
+CREATE TABLE IF NOT EXISTS predictions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT    NOT NULL,
+    cell_id           INTEGER NOT NULL,
+    ts_made           REAL    NOT NULL,   -- instant où la prédiction a été émise
+    eta_strike_min    REAL,
+    predicted_arrival REAL,               -- ts_made + eta_strike_min*60
+    probability       REAL,
+    closest_km        REAL
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_ts ON predictions(ts_made);
 """
 
 _INSERT_SQL = (
@@ -170,6 +221,167 @@ class Database:
             self._flush_locked()
             row = self.conn.execute("SELECT MIN(ts_unix), MAX(ts_unix) FROM strikes").fetchone()
         return (row[0], row[1])
+
+    # ── persistance des cellules / trajectoires ──────────────────────────────
+    def upsert_cells(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        """Insère/agrège les cellules (clé run_id+cell_id). Garde les pics."""
+        if not rows:
+            return
+        sql = """
+            INSERT INTO cells
+                (run_id, cell_id, first_seen, last_seen, peak_flash_rate,
+                 max_radius_km, max_severity, total_strikes, parent_id)
+            VALUES (:run_id, :cell_id, :first_seen, :last_seen, :flash,
+                    :radius, :sev, :strikes, :parent)
+            ON CONFLICT(run_id, cell_id) DO UPDATE SET
+                last_seen       = excluded.last_seen,
+                peak_flash_rate = MAX(COALESCE(cells.peak_flash_rate, 0), COALESCE(excluded.peak_flash_rate, 0)),
+                max_radius_km   = MAX(COALESCE(cells.max_radius_km, 0),   COALESCE(excluded.max_radius_km, 0)),
+                max_severity    = MAX(COALESCE(cells.max_severity, 0),    COALESCE(excluded.max_severity, 0)),
+                total_strikes   = MAX(COALESCE(cells.total_strikes, 0),   COALESCE(excluded.total_strikes, 0)),
+                parent_id       = COALESCE(cells.parent_id, excluded.parent_id)
+        """
+        params = [
+            {
+                "run_id": run_id, "cell_id": c["cell_id"],
+                "first_seen": c["first_seen"], "last_seen": c["last_seen"],
+                "flash": c.get("flash_rate_per_min"), "radius": c["radius_km"],
+                "sev": c.get("severity"), "strikes": c["strikes_count"],
+                "parent": c.get("parent_id"),
+            }
+            for c in rows
+        ]
+        with self._lock:
+            try:
+                self.conn.executemany(sql, params)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur upsert cells")
+
+    def insert_cell_tracks(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO cell_track
+                (run_id, cell_id, ts_unix, lat, lon, radius_km, strikes_count,
+                 flash_rate_per_min, velocity_kmh, heading_deg, severity,
+                 eta_minutes, eta_strike_minutes, closest_approach_km,
+                 strike_probability, jump_detected)
+            VALUES (:run_id, :cell_id, :ts, :lat, :lon, :radius, :strikes,
+                    :flash, :vel, :hdg, :sev, :eta, :etas, :closest, :prob, :jump)
+        """
+        params = [
+            {
+                "run_id": run_id, "cell_id": c["cell_id"], "ts": c["last_seen"],
+                "lat": c["centroid"]["lat"], "lon": c["centroid"]["lon"],
+                "radius": c["radius_km"], "strikes": c["strikes_count"],
+                "flash": c.get("flash_rate_per_min"), "vel": c.get("velocity_kmh"),
+                "hdg": c.get("heading_deg"), "sev": c.get("severity"),
+                "eta": c.get("eta_minutes"), "etas": c.get("eta_strike_minutes"),
+                "closest": c.get("closest_approach_km"), "prob": c.get("strike_probability"),
+                "jump": 1 if c.get("jump_detected") else 0,
+            }
+            for c in rows
+        ]
+        with self._lock:
+            try:
+                self.conn.executemany(sql, params)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur insert cell_track")
+
+    def list_cells(
+        self, from_unix: float | None = None, to_unix: float | None = None,
+        min_strikes: int = 0, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        conds, params = [], []
+        if from_unix is not None:
+            conds.append("last_seen >= ?"); params.append(from_unix)
+        if to_unix is not None:
+            conds.append("first_seen <= ?"); params.append(to_unix)
+        if min_strikes:
+            conds.append("total_strikes >= ?"); params.append(min_strikes)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        sql = f"SELECT * FROM cells {where} ORDER BY last_seen DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def cell_track(self, run_id: str, cell_id: int) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cell_track WHERE run_id = ? AND cell_id = ? ORDER BY ts_unix ASC"
+        with self._lock:
+            rows = self.conn.execute(sql, (run_id, cell_id)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── prédictions / vérification ───────────────────────────────────────────
+    def log_predictions(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO predictions
+                (run_id, cell_id, ts_made, eta_strike_min, predicted_arrival, probability, closest_km)
+            VALUES (:run_id, :cell_id, :ts_made, :eta, :pa, :prob, :closest)
+        """
+        with self._lock:
+            try:
+                self.conn.executemany(sql, rows)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur log predictions")
+
+    def predictions_between(self, from_unix: float, to_unix: float) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM predictions WHERE ts_made >= ? AND ts_made <= ? ORDER BY ts_made ASC"
+        with self._lock:
+            rows = self.conn.execute(sql, (from_unix, to_unix)).fetchall()
+        return [dict(r) for r in rows]
+
+    def strike_ts_in_ring(self, ring_km: float, from_unix: float, to_unix: float) -> list[float]:
+        """Timestamps des impacts entrés dans l'anneau (distance ≤ ring) sur la fenêtre."""
+        sql = "SELECT ts_unix FROM strikes WHERE distance_km <= ? AND ts_unix >= ? AND ts_unix <= ? ORDER BY ts_unix ASC"
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (ring_km, from_unix, to_unix)).fetchall()
+        return [float(r[0]) for r in rows]
+
+    # ── analytics historiques ────────────────────────────────────────────────
+    def _grouped(self, sql: str, days: int, extra: tuple = ()) -> list[dict[str, Any]]:
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (f"-{int(days)} days", *extra)).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_by_hour_of_day(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(strftime('%H', ts_utc) AS INT) AS hour, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY hour ORDER BY hour",
+            days,
+        )
+
+    def count_by_weekday(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(strftime('%w', ts_utc) AS INT) AS weekday, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY weekday ORDER BY weekday",
+            days,
+        )
+
+    def bearing_rose(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(((bearing_deg + 11.25) / 22.5) AS INT) % 16 AS sector, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY sector ORDER BY sector",
+            days,
+        )
+
+    def distance_histogram(self, days: int = 365, bin_km: float = 10.0, max_km: float = 300.0) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT CAST(distance_km / ? AS INT) AS bin, COUNT(*) AS n "
+            "FROM strikes WHERE distance_km <= ? AND ts_unix >= strftime('%s','now',?)*1.0 "
+            "GROUP BY bin ORDER BY bin"
+        )
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (bin_km, max_km, f"-{int(days)} days")).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self) -> None:
         self._closed = True

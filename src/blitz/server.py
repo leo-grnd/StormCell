@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import queue
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .analysis import filter_window, update_cells
@@ -20,6 +23,7 @@ from .config import Config
 from .db import Database
 from .mqtt_worker import MqttWorker
 from .state import SharedState, Strike
+from .verification import evaluate
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,10 @@ class AppContext:
         self.hub = Hub()
         self.worker: MqttWorker | None = None
         self._next_cell_id = 1
+        # ── Vague 3 : mémoire & vérification ─────────────────────────────────
+        self.run_id = uuid.uuid4().hex[:12]   # les cell_id repartent à 1 à chaque run
+        self._persisted_track_ts: dict[int, float] = {}
+        self._open_warnings: set[int] = set()
 
     def on_nearby(self, s: Strike) -> None:
         """Listener appelé par le worker MQTT pour chaque impact dans la zone."""
@@ -141,8 +149,43 @@ def create_app(config: Config) -> FastAPI:
                 await ctx.hub.broadcast(
                     {"type": "cells", "data": [c.to_dict() for c in cells.values()]}
                 )
+                # Persistance (catalogue + trajectoires) et journal des prédictions.
+                await run_in_threadpool(_persist_and_predict, cells)
             except Exception:
                 logger.exception("Erreur dans la boucle d'analyse")
+
+    def _persist_and_predict(cells: dict) -> None:
+        """Écrit les cellules/trajectoires en DB et journalise les nouvelles alertes."""
+        now2 = time.time()
+        min_prob = config.predict.min_probability
+        live_dicts: list[dict] = []
+        track_rows: list[dict] = []
+        new_preds: list[dict] = []
+        current_warn: set[int] = set()
+
+        for cell in cells.values():
+            cd = cell.to_dict()
+            cid = cd["cell_id"]
+            if cell.misses == 0:
+                live_dicts.append(cd)
+                if cd["last_seen"] > ctx._persisted_track_ts.get(cid, 0.0):
+                    track_rows.append(cd)
+                    ctx._persisted_track_ts[cid] = cd["last_seen"]
+            prob = cd.get("strike_probability") or 0.0
+            eta_s = cd.get("eta_strike_minutes")
+            if eta_s is not None and prob >= min_prob:
+                current_warn.add(cid)
+                if cid not in ctx._open_warnings:   # nouvelle alerte → on la journalise une fois
+                    new_preds.append({
+                        "run_id": ctx.run_id, "cell_id": cid, "ts_made": now2,
+                        "eta": eta_s, "pa": now2 + eta_s * 60.0,
+                        "prob": prob, "closest": cd.get("closest_approach_km"),
+                    })
+
+        ctx.db.upsert_cells(ctx.run_id, live_dicts)
+        ctx.db.insert_cell_tracks(ctx.run_id, track_rows)
+        ctx.db.log_predictions(new_preds)
+        ctx._open_warnings = current_warn
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -197,6 +240,7 @@ def create_app(config: Config) -> FastAPI:
         snap["max_distance_km"] = config.filter.max_distance_km
         snap["alert_distance_km"] = config.filter.alert_distance_km
         snap["server_time"] = time.time()
+        snap["run_id"] = ctx.run_id
         return snap
 
     @app.get("/api/strikes/live")
@@ -230,6 +274,131 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/cells")
     async def get_cells() -> dict:
         return {"cells": [c.to_dict() for c in ctx.state.snapshot_cells()]}
+
+    # ── Vague 3 : vérification, analytics, catalogue, exports ─────────────────
+    @app.get("/api/verification")
+    async def get_verification(days: int = Query(7, ge=1, le=3650)) -> dict:
+        now2 = time.time()
+        frm = now2 - days * 86400
+        ring = config.filter.alert_distance_km
+        preds = await run_in_threadpool(ctx.db.predictions_between, frm, now2)
+        in_ring = await run_in_threadpool(ctx.db.strike_ts_in_ring, ring, frm, now2)
+        report = evaluate(
+            preds, in_ring,
+            tolerance_min=config.predict.verify_tolerance_min,
+            gap_min=config.predict.arrival_gap_min,
+        )
+        report["ring_km"] = ring
+        report["days"] = days
+        return report
+
+    @app.get("/api/analytics/summary")
+    async def get_analytics(days: int = Query(365, ge=1, le=3650)) -> dict:
+        hod = await run_in_threadpool(ctx.db.count_by_hour_of_day, days)
+        wd = await run_in_threadpool(ctx.db.count_by_weekday, days)
+        rose = await run_in_threadpool(ctx.db.bearing_rose, days)
+        dist = await run_in_threadpool(
+            ctx.db.distance_histogram, days, 10.0, config.filter.max_distance_km
+        )
+        card = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                "S", "SSO", "SO", "OSO", "O", "ONO", "NO", "NNO"]
+        hour = [0] * 24
+        for r in hod:
+            hour[r["hour"]] = r["n"]
+        week = [0] * 7
+        for r in wd:
+            week[r["weekday"]] = r["n"]
+        rose_arr = [0] * 16
+        for r in rose:
+            rose_arr[r["sector"]] = r["n"]
+        return {
+            "hour_of_day": hour,
+            "weekday": week,
+            "rose": [{"dir": card[i], "n": rose_arr[i]} for i in range(16)],
+            "distance_hist": dist,
+            "days": days,
+        }
+
+    @app.get("/api/cells/catalog")
+    async def get_catalog(days: int = Query(30, ge=1, le=3650), min_strikes: int = 0) -> dict:
+        frm = time.time() - days * 86400
+        cells = await run_in_threadpool(ctx.db.list_cells, frm, None, min_strikes, 500)
+        return {"cells": cells, "current_run": ctx.run_id}
+
+    @app.get("/api/cells/track")
+    async def get_cell_track(run_id: str, cell_id: int) -> dict:
+        rows = await run_in_threadpool(ctx.db.cell_track, run_id, cell_id)
+        return {"track": rows}
+
+    def _export_rows(date_from, date_to, max_distance, min_mds, limit):
+        return ctx.db.query_range(
+            from_unix=_iso_to_unix(date_from), to_unix=_iso_to_unix(date_to),
+            max_distance_km=max_distance, min_mds=min_mds, limit=limit,
+        )
+
+    @app.get("/api/export/strikes.csv")
+    async def export_csv(
+        date_from: str | None = Query(None, alias="from"),
+        date_to: str | None = Query(None, alias="to"),
+        max_distance: float | None = None, min_mds: int | None = None,
+        limit: int = Query(500_000, le=2_000_000),
+    ) -> Response:
+        rows = await run_in_threadpool(_export_rows, date_from, date_to, max_distance, min_mds, limit)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        cols = ["ts_unix", "ts_utc", "lat", "lon", "distance_km", "bearing_deg", "mds", "home_lat", "home_lon"]
+        w.writerow(cols)
+        for r in rows:
+            w.writerow([r.get(c) for c in cols])
+        return Response(
+            content=buf.getvalue(), media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=strikes.csv"},
+        )
+
+    @app.get("/api/export/strikes.geojson")
+    async def export_geojson(
+        date_from: str | None = Query(None, alias="from"),
+        date_to: str | None = Query(None, alias="to"),
+        max_distance: float | None = None, min_mds: int | None = None,
+        limit: int = Query(500_000, le=2_000_000),
+    ) -> Response:
+        rows = await run_in_threadpool(_export_rows, date_from, date_to, max_distance, min_mds, limit)
+        feats = [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
+                "properties": {k: r.get(k) for k in ("ts_unix", "ts_utc", "distance_km", "bearing_deg", "mds")},
+            }
+            for r in rows
+        ]
+        return JSONResponse(
+            {"type": "FeatureCollection", "features": feats},
+            headers={"Content-Disposition": "attachment; filename=strikes.geojson"},
+        )
+
+    @app.get("/api/export/cell_tracks.geojson")
+    async def export_cell_tracks(run_id: str | None = None) -> Response:
+        rid = run_id or ctx.run_id
+        cells = await run_in_threadpool(ctx.db.list_cells, None, None, 0, 5000)
+        feats = []
+        for c in cells:
+            if c["run_id"] != rid:
+                continue
+            tr = await run_in_threadpool(ctx.db.cell_track, rid, c["cell_id"])
+            if len(tr) < 2:
+                continue
+            feats.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[t["lon"], t["lat"]] for t in tr]},
+                "properties": {
+                    "cell_id": c["cell_id"], "max_severity": c["max_severity"],
+                    "total_strikes": c["total_strikes"], "peak_flash_rate": c["peak_flash_rate"],
+                },
+            })
+        return JSONResponse(
+            {"type": "FeatureCollection", "features": feats},
+            headers={"Content-Disposition": f"attachment; filename=cell_tracks_{rid}.geojson"},
+        )
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

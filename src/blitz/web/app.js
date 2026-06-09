@@ -33,6 +33,8 @@ $$(".tab").forEach((t) => t.addEventListener("click", () => {
   $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${tab}`));
   if (tab === "history") {
     setTimeout(() => mapHist.invalidateSize(), 60);
+  } else if (tab === "analyse") {
+    loadAnalyse();
   } else {
     setTimeout(() => mapLive.invalidateSize(), 60);
   }
@@ -543,3 +545,157 @@ function replayHistory() {
     }, delay);
   });
 }
+
+// ── Analyse (Vague 3 : vérification, analytics, catalogue) ───────────────────
+let catalogTrack = null;
+
+async function loadAnalyse() {
+  const days = Math.max(1, +$("#an-days").value || 30);
+  const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+  $("#dl-csv").href = `/api/export/strikes.csv?from=${encodeURIComponent(fromIso)}`;
+  $("#dl-geojson").href = `/api/export/strikes.geojson?from=${encodeURIComponent(fromIso)}`;
+  $("#dl-tracks").href = `/api/export/cell_tracks.geojson`;
+  try {
+    const [ver, an, cat] = await Promise.all([
+      fetch(`/api/verification?days=${days}`).then((r) => r.json()),
+      fetch(`/api/analytics/summary?days=${days}`).then((r) => r.json()),
+      fetch(`/api/cells/catalog?days=${days}`).then((r) => r.json()),
+    ]);
+    renderSkill(ver);
+    renderPredTable(ver.recent);
+    drawBars("ch-hour", an.hour_of_day, { color: "#1f6feb", labels: an.hour_of_day.map((_, i) => i), everyLabel: 3 });
+    drawBars("ch-week", an.weekday, { color: "#3fb950", labels: ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"], everyLabel: 1 });
+    drawBars("ch-dist", an.distance_hist.map((d) => d.n), { color: "#d29922" });
+    drawRose("ch-rose", an.rose);
+    renderCatalog(cat.cells);
+  } catch (e) { console.error("loadAnalyse", e); }
+}
+
+function renderSkill(rep) {
+  $("#skill-sub").textContent = `— ${rep.days} j, anneau ${rep.ring_km} km`;
+  const pct = (v) => (v == null ? "—" : Math.round(v * 100) + "%");
+  const cards = [
+    ["POD", pct(rep.pod), "détection"],
+    ["FAR", pct(rep.far), "fausses alertes"],
+    ["CSI", pct(rep.csi), "score critique"],
+    ["Prédictions", rep.total_predictions, ""],
+    ["Arrivées", rep.total_arrivals, `foudre ≤ ${rep.ring_km} km`],
+    ["Erreur ETA", rep.mean_eta_error_min != null ? rep.mean_eta_error_min + " min" : "—", "moyenne"],
+    ["Préavis", rep.mean_lead_min != null ? rep.mean_lead_min + " min" : "—", "moyenne"],
+  ];
+  $("#skill-cards").innerHTML = cards.map(([k, v, sub]) =>
+    `<div class="skill-card"><div class="sk-val">${v}</div><div class="sk-key">${k}</div><div class="sk-sub">${sub}</div></div>`
+  ).join("");
+}
+
+function renderPredTable(recent) {
+  const tb = $("#pred-table tbody");
+  if (!recent || !recent.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="muted">aucune prédiction sur la période</td></tr>`;
+    return;
+  }
+  tb.innerHTML = recent.map((p) => {
+    const out = p.outcome === "hit"
+      ? '<span class="color-green">✓ touché</span>'
+      : '<span class="color-orange">✗ fausse alerte</span>';
+    const err = p.eta_error_min != null ? `${p.eta_error_min > 0 ? "+" : ""}${p.eta_error_min.toFixed(1)} min` : "—";
+    const eta = p.eta_strike_min != null ? `${p.eta_strike_min.toFixed(0)} min` : "?";
+    return `<tr><td>${fmtClock(p.ts_made)}</td><td>#${p.cell_id}</td><td>${eta}</td><td>${Math.round((p.probability || 0) * 100)}%</td><td>${out}</td><td>${err}</td></tr>`;
+  }).join("");
+}
+
+function drawBars(canvasId, values, opts = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth || 300;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!values || !values.length || Math.max(...values) === 0) {
+    ctx.fillStyle = "#8b95a7"; ctx.font = "11px sans-serif"; ctx.fillText("(aucune donnée)", 10, 20); return;
+  }
+  const max = Math.max(...values);
+  const bw = W / values.length;
+  ctx.fillStyle = opts.color || "#1f6feb";
+  values.forEach((v, i) => {
+    const h = (v / max) * (H - 16);
+    ctx.fillRect(i * bw + 1, H - h - 12, Math.max(1, bw - 2), h);
+  });
+  if (opts.labels) {
+    ctx.fillStyle = "#8b95a7"; ctx.font = "9px sans-serif";
+    opts.labels.forEach((lb, i) => {
+      if (opts.everyLabel && i % opts.everyLabel !== 0) return;
+      ctx.fillText(lb, i * bw + 1, H - 2);
+    });
+  }
+}
+
+function drawRose(containerId, rose) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!rose || !rose.length) { el.innerHTML = '<span class="muted">(aucune donnée)</span>'; return; }
+  const cx = 85, cy = 85, R = 72;
+  const max = Math.max(1, ...rose.map((d) => d.n));
+  let paths = "";
+  rose.forEach((d, i) => {
+    const a0 = ((i * 22.5 - 11.25) - 90) * Math.PI / 180;
+    const a1 = ((i * 22.5 + 11.25) - 90) * Math.PI / 180;
+    const r = (d.n / max) * R;
+    if (r < 0.5) return;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    paths += `<path d="M${cx},${cy} L${x0.toFixed(1)},${y0.toFixed(1)} A${r.toFixed(1)},${r.toFixed(1)} 0 0,1 ${x1.toFixed(1)},${y1.toFixed(1)} Z" fill="#1f6feb" opacity="0.75"/>`;
+  });
+  const ring = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#2a2f38"/>`;
+  const lbls = `<text x="${cx - 4}" y="11" class="rose-lbl">N</text><text x="164" y="${cy + 4}" class="rose-lbl">E</text>` +
+    `<text x="${cx - 4}" y="167" class="rose-lbl">S</text><text x="2" y="${cy + 4}" class="rose-lbl">O</text>`;
+  el.innerHTML = `<svg viewBox="0 0 170 170" width="170" height="170">${ring}${paths}${lbls}</svg>`;
+}
+
+function fmtDuration(min) {
+  if (min < 60) return `${Math.round(min)} min`;
+  return `${(min / 60).toFixed(1)} h`;
+}
+
+function renderCatalog(cells) {
+  const tb = $("#catalog-table tbody");
+  if (!cells || !cells.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="muted">aucune cellule persistée sur la période</td></tr>`;
+    return;
+  }
+  tb.innerHTML = "";
+  cells.forEach((c) => {
+    const tr = document.createElement("tr");
+    tr.className = "catalog-row";
+    const dur = (c.last_seen - c.first_seen) / 60;
+    tr.innerHTML = `<td>#${c.cell_id}</td><td>${fmtDateTime(c.first_seen)}</td><td>${fmtDuration(dur)}</td>` +
+      `<td>${c.total_strikes ?? "?"}</td><td>${(c.max_severity ?? 0).toFixed(1)}</td><td>${(c.peak_flash_rate ?? 0).toFixed(0)}</td>`;
+    tr.addEventListener("click", () => showCellTrack(c.run_id, c.cell_id));
+    tb.appendChild(tr);
+  });
+}
+
+async function showCellTrack(run_id, cell_id) {
+  try {
+    const j = await fetch(`/api/cells/track?run_id=${encodeURIComponent(run_id)}&cell_id=${cell_id}`).then((r) => r.json());
+    if (!j.track || !j.track.length) return;
+    document.querySelector('.tab[data-tab="history"]').click();
+    setTimeout(() => {
+      mapHist.invalidateSize();
+      if (catalogTrack) mapHist.removeLayer(catalogTrack);
+      catalogTrack = L.layerGroup().addTo(mapHist);
+      const pts = j.track.map((t) => [t.lat, t.lon]);
+      L.polyline(pts, { color: "#f85149", weight: 3, opacity: 0.85 }).addTo(catalogTrack);
+      j.track.forEach((t) => {
+        L.circleMarker([t.lat, t.lon], { radius: 4, color: severityColor(t.severity || 0), weight: 1, fillOpacity: 0.85 })
+          .bindPopup(`<b>Cellule #${cell_id}</b><br>${fmtDateTime(t.ts_unix)}<br>${t.strikes_count} impacts · sév ${(t.severity || 0).toFixed(1)}` +
+            (t.velocity_kmh ? `<br>${t.velocity_kmh.toFixed(0)} km/h` : ""))
+          .addTo(catalogTrack);
+      });
+      if (pts.length === 1) mapHist.setView(pts[0], 9);
+      else mapHist.fitBounds(L.latLngBounds(pts), { maxZoom: 10, padding: [30, 30] });
+    }, 90);
+  } catch (e) { console.error("showCellTrack", e); }
+}
+
+$("#an-load").addEventListener("click", loadAnalyse);

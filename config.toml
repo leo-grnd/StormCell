@@ -44,6 +44,11 @@ jump_window_min = 2.0        # fenêtre du taux d'éclairs instantané (lightnin
 strike_ring_km = 15.0        # anneau « foudre arrivée » pour l'ETA au bord de cellule
 nowcast_horizon_min = 30.0   # horizon de la proba de coup sur HOME
 
+[predict]
+min_probability = 0.3       # proba minimale pour journaliser une prédiction (vérification)
+verify_tolerance_min = 10   # fenêtre d'appariement prédiction ↔ arrivée réelle (min)
+arrival_gap_min = 20        # écart séparant deux événements d'arrivée de foudre (min)
+
 [log]
 file = "blitz.log"
 max_bytes = 10485760     # 10 MiB

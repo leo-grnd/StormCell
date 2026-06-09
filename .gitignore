@@ -20,8 +20,10 @@ env/
 *.db-shm
 *.log
 
-# ─── IDE / OS ────────────────────────────────────────────────────────────────
+# ─── IDE / OS / outils ───────────────────────────────────────────────────────
 .idea/
 .vscode/
+.claude/launch.json
+_weblaunch.log
 .DS_Store
 Thumbs.db
