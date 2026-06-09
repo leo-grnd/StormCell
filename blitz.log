@@ -1,0 +1,72 @@
+2026-06-04 00:25:30,886 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 00:25:33,427 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8765
+2026-06-04 00:25:33,497 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 00:25:34,676 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 00:27:16,353 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 00:27:16,353 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 00:30:54,752 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 00:30:56,816 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 00:30:56,859 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 00:30:57,829 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 00:34:13,314 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 00:34:13,314 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 00:34:37,923 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 00:34:40,136 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 00:34:40,292 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 00:34:40,859 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 00:34:56,936 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 00:34:56,937 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 16:40:08,479 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 16:40:27,604 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 16:40:28,322 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 16:40:29,047 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 16:46:29,449 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 16:46:29,450 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 16:46:57,591 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 16:46:59,647 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 16:46:59,679 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 16:47:00,249 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 16:48:49,430 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 16:48:49,430 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 16:59:17,009 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 16:59:19,323 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8765
+2026-06-04 16:59:19,386 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 16:59:20,315 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:00:57,457 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:00:57,457 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:01:25,310 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:01:27,387 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 17:01:27,431 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:01:28,212 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:04:03,253 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:04:03,253 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:06:43,728 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:06:45,840 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 17:06:45,889 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:06:46,473 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:07:21,511 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:07:21,511 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:09:57,343 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:09:59,472 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 17:09:59,518 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:10:00,521 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:10:29,985 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:10:29,987 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:12:45,631 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:12:48,206 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8765
+2026-06-04 17:12:48,251 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:12:49,160 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:12:49,483 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:12:49,483 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:13:03,165 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:13:05,300 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 17:13:05,343 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:13:06,685 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:13:40,726 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:13:40,726 INFO blitz.mqtt_worker: Worker MQTT arrêté
+2026-06-04 17:15:47,680 INFO blitz.cli: Config chargée : config.toml
+2026-06-04 17:15:49,735 INFO blitz.cli: Démarrage du serveur web sur http://127.0.0.1:8000
+2026-06-04 17:15:49,777 INFO blitz.mqtt_worker: Worker MQTT démarré
+2026-06-04 17:15:50,730 INFO blitz.mqtt_worker: Connecté à blitzortung.ha.sed.pl:1883 — abonnement à blitzortung/1.1/#
+2026-06-04 17:24:18,737 INFO blitz.mqtt_worker: Déconnexion propre
+2026-06-04 17:24:18,737 INFO blitz.mqtt_worker: Worker MQTT arrêté
