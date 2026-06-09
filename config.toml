@@ -1,0 +1,43 @@
+# Configuration du moniteur Blitzortung.
+# Toutes les sections et clés sont optionnelles ; les valeurs absentes prennent
+# les défauts définis dans src/blitz/config.py.
+
+[home]
+lat = 44.243318          # Mondragon
+lon = 4.716102
+
+[filter]
+max_distance_km = 10000
+max_strikes_shown = 15   # ligne(s) du TUI legacy
+alert_distance_km = 15   # alerte sonore frontend si impact sous ce seuil
+
+[mqtt]
+host = "blitzortung.ha.sed.pl"
+port = 1883
+topic = "blitzortung/1.1/#"
+reconnect_min_s = 1
+reconnect_max_s = 60
+keepalive_s = 60
+
+[db]
+path = "lightning_log.db"
+
+[web]
+host = "127.0.0.1"
+port = 8000
+
+[analysis]
+cluster_eps_km = 12          # rayon DBSCAN (haversine, cohérent partout)
+cluster_min_samples = 4
+cell_window_minutes = 30     # fenêtre glissante pour le tracking
+tick_seconds = 7             # cadence du recalcul des cellules
+min_mds_quality = 0          # impacts ignorés si mds < cette valeur (0 = pas de filtre)
+max_track_misses = 2         # une cellule survit N ticks "creux" avant disparition
+eta_max_radius_km = 500      # ETA HOME calculée seulement pour cellules sous ce rayon
+max_strikes_for_clustering = 20000  # sous-échantillonnage si dépassé
+motion_history_seconds = 900 # fenêtre de régression vitesse (15 min)
+
+[log]
+file = "blitz.log"
+max_bytes = 10485760     # 10 MiB
+backups = 3
