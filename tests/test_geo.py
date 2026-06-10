@@ -18,7 +18,6 @@ from blitz.geo import (  # noqa: E402
     unproject_local,
 )
 
-
 # Coordonnées de référence
 PARIS = (48.8566, 2.3522)
 MARSEILLE = (43.2965, 5.3698)

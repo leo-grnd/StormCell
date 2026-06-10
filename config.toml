@@ -36,6 +36,18 @@ max_track_misses = 2         # une cellule survit N ticks "creux" avant disparit
 eta_max_radius_km = 500      # ETA HOME calculée seulement pour cellules sous ce rayon
 max_strikes_for_clustering = 20000  # sous-échantillonnage si dépassé
 motion_history_seconds = 900 # fenêtre de régression vitesse (15 min)
+recent_buffer = 50000        # impacts gardés en RAM (doit couvrir la fenêtre même en gros orage)
+# Vague 2 : suivi Kalman + nowcast
+kf_meas_noise_km = 2.5       # bruit de mesure du centroïde (km)
+kf_process_accel = 0.00002   # bruit de process (accélération, km/s²)
+jump_window_min = 2.0        # fenêtre du taux d'éclairs instantané (lightning jump)
+strike_ring_km = 15.0        # anneau « foudre arrivée » pour l'ETA au bord de cellule
+nowcast_horizon_min = 30.0   # horizon de la proba de coup sur HOME
+
+[predict]
+min_probability = 0.3       # proba minimale pour journaliser une prédiction (vérification)
+verify_tolerance_min = 10   # fenêtre d'appariement prédiction ↔ arrivée réelle (min)
+arrival_gap_min = 20        # écart séparant deux événements d'arrivée de foudre (min)
 
 [log]
 file = "blitz.log"

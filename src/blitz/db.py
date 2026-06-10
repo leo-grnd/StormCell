@@ -1,12 +1,23 @@
-"""Persistance SQLite des impacts."""
+"""Persistance SQLite des impacts.
+
+Thread-safety : une seule connexion est partagée entre le thread réseau MQTT
+(écritures), les threads du pool FastAPI (lectures) et un thread flusher interne.
+Tous les accès à la connexion passent par `self._lock`.
+
+Écritures batchées : `insert_strike` met en tampon et un `executemany` est émis
+soit quand le tampon atteint `flush_threshold`, soit toutes les `flush_interval`
+secondes (thread flusher), au lieu d'un `commit` par impact dans le thread MQTT.
+"""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +36,85 @@ CREATE TABLE IF NOT EXISTS strikes (
 );
 CREATE INDEX IF NOT EXISTS idx_strikes_ts   ON strikes(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_strikes_dist ON strikes(distance_km);
+
+-- Catalogue des cellules orageuses détectées (une ligne par cellule et par run).
+CREATE TABLE IF NOT EXISTS cells (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT    NOT NULL,   -- identifiant du process (les cell_id repartent à 1 par run)
+    cell_id         INTEGER NOT NULL,
+    first_seen      REAL    NOT NULL,
+    last_seen       REAL    NOT NULL,
+    peak_flash_rate REAL,
+    max_radius_km   REAL,
+    max_severity    REAL,
+    total_strikes   INTEGER,
+    parent_id       INTEGER,
+    UNIQUE(run_id, cell_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cells_lastseen ON cells(last_seen);
+
+-- Points de trajectoire (un par tick où la cellule est vivante).
+CREATE TABLE IF NOT EXISTS cell_track (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id    TEXT    NOT NULL,
+    cell_id   INTEGER NOT NULL,
+    ts_unix   REAL    NOT NULL,
+    lat       REAL    NOT NULL,
+    lon       REAL    NOT NULL,
+    radius_km REAL,
+    strikes_count       INTEGER,
+    flash_rate_per_min  REAL,
+    velocity_kmh        REAL,
+    heading_deg         REAL,
+    severity            REAL,
+    eta_minutes         REAL,
+    eta_strike_minutes  REAL,
+    closest_approach_km REAL,
+    strike_probability  REAL,
+    jump_detected       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_celltrack ON cell_track(run_id, cell_id, ts_unix);
+
+-- Journal des prédictions émises (pour la vérification / skill score).
+CREATE TABLE IF NOT EXISTS predictions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT    NOT NULL,
+    cell_id           INTEGER NOT NULL,
+    ts_made           REAL    NOT NULL,   -- instant où la prédiction a été émise
+    eta_strike_min    REAL,
+    predicted_arrival REAL,               -- ts_made + eta_strike_min*60
+    probability       REAL,
+    closest_km        REAL
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_ts ON predictions(ts_made);
+
+-- Cache de géocodage inverse (commune la plus proche d'un point).
+CREATE TABLE IF NOT EXISTS geocache (
+    key   TEXT PRIMARY KEY,   -- "lat,lon" arrondi (~1 km)
+    name  TEXT,
+    ts    REAL
+);
 """
+
+_INSERT_SQL = (
+    "INSERT INTO strikes "
+    "(ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
 
 
 class Database:
-    """Wrapper sqlite3 minimal, partagé entre threads grâce à check_same_thread=False."""
+    """Wrapper sqlite3, sérialisé par un verrou, avec écritures batchées."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        flush_interval: float = 2.0,
+        flush_threshold: int = 200,
+    ) -> None:
         self.path = path
+        self._lock = threading.Lock()
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -40,10 +122,14 @@ class Database:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    def count(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) FROM strikes").fetchone()
-        return int(row[0])
+        self._write_buf: list[tuple] = []
+        self._flush_threshold = flush_threshold
+        self._flush_interval = flush_interval
+        self._closed = False
+        self._flusher = threading.Thread(target=self._flush_loop, name="db-flusher", daemon=True)
+        self._flusher.start()
 
+    # ── écritures (batch) ────────────────────────────────────────────────────
     def insert_strike(
         self,
         ts_unix: float,
@@ -56,16 +142,41 @@ class Database:
         home_lon: float,
     ) -> None:
         ts_utc = datetime.fromtimestamp(ts_unix, tz=timezone.utc).isoformat()
+        row = (ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon)
+        with self._lock:
+            self._write_buf.append(row)
+            if len(self._write_buf) >= self._flush_threshold:
+                self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        """Écrit le tampon. À appeler avec `self._lock` déjà acquis."""
+        if not self._write_buf:
+            return
         try:
-            self.conn.execute(
-                "INSERT INTO strikes "
-                "(ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (ts_unix, ts_utc, lat, lon, distance_km, bearing_deg, mds, home_lat, home_lon),
-            )
+            self.conn.executemany(_INSERT_SQL, self._write_buf)
             self.conn.commit()
+            self._write_buf.clear()
         except sqlite3.Error:
-            logger.exception("Erreur d'insertion SQLite")
+            logger.exception("Erreur de flush SQLite (%d lignes en attente)", len(self._write_buf))
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_loop(self) -> None:
+        while not self._closed:
+            time.sleep(self._flush_interval)
+            try:
+                self.flush()
+            except Exception:
+                logger.exception("Erreur dans le thread flusher SQLite")
+
+    # ── lectures (flush d'abord pour voir les écritures récentes) ────────────
+    def count(self) -> int:
+        with self._lock:
+            self._flush_locked()
+            row = self.conn.execute("SELECT COUNT(*) FROM strikes").fetchone()
+        return int(row[0])
 
     def query_range(
         self,
@@ -93,7 +204,9 @@ class Database:
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         sql = f"SELECT * FROM strikes {where} ORDER BY ts_unix ASC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(sql, params).fetchall()
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def count_per_hour(self, days: int = 30) -> list[dict[str, Any]]:
@@ -105,15 +218,206 @@ class Database:
             GROUP BY hour
             ORDER BY hour ASC
         """
-        rows = self.conn.execute(sql, (f"-{int(days)} days",)).fetchall()
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (f"-{int(days)} days",)).fetchall()
         return [dict(r) for r in rows]
 
     def date_bounds(self) -> tuple[float | None, float | None]:
-        row = self.conn.execute("SELECT MIN(ts_unix), MAX(ts_unix) FROM strikes").fetchone()
+        with self._lock:
+            self._flush_locked()
+            row = self.conn.execute("SELECT MIN(ts_unix), MAX(ts_unix) FROM strikes").fetchone()
         return (row[0], row[1])
 
+    # ── persistance des cellules / trajectoires ──────────────────────────────
+    def upsert_cells(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        """Insère/agrège les cellules (clé run_id+cell_id). Garde les pics."""
+        if not rows:
+            return
+        sql = """
+            INSERT INTO cells
+                (run_id, cell_id, first_seen, last_seen, peak_flash_rate,
+                 max_radius_km, max_severity, total_strikes, parent_id)
+            VALUES (:run_id, :cell_id, :first_seen, :last_seen, :flash,
+                    :radius, :sev, :strikes, :parent)
+            ON CONFLICT(run_id, cell_id) DO UPDATE SET
+                last_seen       = excluded.last_seen,
+                peak_flash_rate = MAX(COALESCE(cells.peak_flash_rate, 0), COALESCE(excluded.peak_flash_rate, 0)),
+                max_radius_km   = MAX(COALESCE(cells.max_radius_km, 0),   COALESCE(excluded.max_radius_km, 0)),
+                max_severity    = MAX(COALESCE(cells.max_severity, 0),    COALESCE(excluded.max_severity, 0)),
+                total_strikes   = MAX(COALESCE(cells.total_strikes, 0),   COALESCE(excluded.total_strikes, 0)),
+                parent_id       = COALESCE(cells.parent_id, excluded.parent_id)
+        """
+        params = [
+            {
+                "run_id": run_id, "cell_id": c["cell_id"],
+                "first_seen": c["first_seen"], "last_seen": c["last_seen"],
+                "flash": c.get("flash_rate_per_min"), "radius": c["radius_km"],
+                "sev": c.get("severity"), "strikes": c["strikes_count"],
+                "parent": c.get("parent_id"),
+            }
+            for c in rows
+        ]
+        with self._lock:
+            try:
+                self.conn.executemany(sql, params)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur upsert cells")
+
+    def insert_cell_tracks(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO cell_track
+                (run_id, cell_id, ts_unix, lat, lon, radius_km, strikes_count,
+                 flash_rate_per_min, velocity_kmh, heading_deg, severity,
+                 eta_minutes, eta_strike_minutes, closest_approach_km,
+                 strike_probability, jump_detected)
+            VALUES (:run_id, :cell_id, :ts, :lat, :lon, :radius, :strikes,
+                    :flash, :vel, :hdg, :sev, :eta, :etas, :closest, :prob, :jump)
+        """
+        params = [
+            {
+                "run_id": run_id, "cell_id": c["cell_id"], "ts": c["last_seen"],
+                "lat": c["centroid"]["lat"], "lon": c["centroid"]["lon"],
+                "radius": c["radius_km"], "strikes": c["strikes_count"],
+                "flash": c.get("flash_rate_per_min"), "vel": c.get("velocity_kmh"),
+                "hdg": c.get("heading_deg"), "sev": c.get("severity"),
+                "eta": c.get("eta_minutes"), "etas": c.get("eta_strike_minutes"),
+                "closest": c.get("closest_approach_km"), "prob": c.get("strike_probability"),
+                "jump": 1 if c.get("jump_detected") else 0,
+            }
+            for c in rows
+        ]
+        with self._lock:
+            try:
+                self.conn.executemany(sql, params)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur insert cell_track")
+
+    def list_cells(
+        self, from_unix: float | None = None, to_unix: float | None = None,
+        min_strikes: int = 0, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        conds, params = [], []
+        if from_unix is not None:
+            conds.append("last_seen >= ?")
+            params.append(from_unix)
+        if to_unix is not None:
+            conds.append("first_seen <= ?")
+            params.append(to_unix)
+        if min_strikes:
+            conds.append("total_strikes >= ?")
+            params.append(min_strikes)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        sql = f"SELECT * FROM cells {where} ORDER BY last_seen DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def cell_track(self, run_id: str, cell_id: int) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cell_track WHERE run_id = ? AND cell_id = ? ORDER BY ts_unix ASC"
+        with self._lock:
+            rows = self.conn.execute(sql, (run_id, cell_id)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── prédictions / vérification ───────────────────────────────────────────
+    def log_predictions(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO predictions
+                (run_id, cell_id, ts_made, eta_strike_min, predicted_arrival, probability, closest_km)
+            VALUES (:run_id, :cell_id, :ts_made, :eta, :pa, :prob, :closest)
+        """
+        with self._lock:
+            try:
+                self.conn.executemany(sql, rows)
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur log predictions")
+
+    def predictions_between(self, from_unix: float, to_unix: float) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM predictions WHERE ts_made >= ? AND ts_made <= ? ORDER BY ts_made ASC"
+        with self._lock:
+            rows = self.conn.execute(sql, (from_unix, to_unix)).fetchall()
+        return [dict(r) for r in rows]
+
+    def strike_ts_in_ring(self, ring_km: float, from_unix: float, to_unix: float) -> list[float]:
+        """Timestamps des impacts entrés dans l'anneau (distance ≤ ring) sur la fenêtre."""
+        sql = (
+            "SELECT ts_unix FROM strikes "
+            "WHERE distance_km <= ? AND ts_unix >= ? AND ts_unix <= ? ORDER BY ts_unix ASC"
+        )
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (ring_km, from_unix, to_unix)).fetchall()
+        return [float(r[0]) for r in rows]
+
+    # ── analytics historiques ────────────────────────────────────────────────
+    def _grouped(self, sql: str, days: int, extra: tuple = ()) -> list[dict[str, Any]]:
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (f"-{int(days)} days", *extra)).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_by_hour_of_day(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(strftime('%H', ts_utc) AS INT) AS hour, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY hour ORDER BY hour",
+            days,
+        )
+
+    def count_by_weekday(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(strftime('%w', ts_utc) AS INT) AS weekday, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY weekday ORDER BY weekday",
+            days,
+        )
+
+    def bearing_rose(self, days: int = 365) -> list[dict[str, Any]]:
+        return self._grouped(
+            "SELECT CAST(((bearing_deg + 11.25) / 22.5) AS INT) % 16 AS sector, COUNT(*) AS n "
+            "FROM strikes WHERE ts_unix >= strftime('%s','now',?)*1.0 GROUP BY sector ORDER BY sector",
+            days,
+        )
+
+    def distance_histogram(self, days: int = 365, bin_km: float = 10.0, max_km: float = 300.0) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT CAST(distance_km / ? AS INT) AS bin, COUNT(*) AS n "
+            "FROM strikes WHERE distance_km <= ? AND ts_unix >= strftime('%s','now',?)*1.0 "
+            "GROUP BY bin ORDER BY bin"
+        )
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, (bin_km, max_km, f"-{int(days)} days")).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── cache de géocodage ───────────────────────────────────────────────────
+    def geocode_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute("SELECT name FROM geocache WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def geocode_put(self, key: str, name: str) -> None:
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO geocache (key, name, ts) VALUES (?, ?, ?)",
+                    (key, name, time.time()),
+                )
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur écriture geocache")
+
     def close(self) -> None:
+        self._closed = True
         try:
-            self.conn.close()
+            with self._lock:
+                self._flush_locked()
+                self.conn.close()
         except sqlite3.Error:
             logger.exception("Erreur à la fermeture SQLite")

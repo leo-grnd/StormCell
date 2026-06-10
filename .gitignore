@@ -1,0 +1,29 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Environnements virtuels ─────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Données & logs runtime (générés au lancement) ───────────────────────────
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# ─── IDE / OS / outils ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+.claude/launch.json
+_weblaunch.log
+.DS_Store
+Thumbs.db
