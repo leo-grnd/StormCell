@@ -17,13 +17,20 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .analysis import filter_window, update_cells
-from .config import Config
+from .config import Config, update_home
 from .db import Database
+from .geocode import reverse_nominatim
 from .mqtt_worker import MqttWorker
 from .state import SharedState, Strike
 from .verification import evaluate
+
+
+class HomeIn(BaseModel):
+    lat: float
+    lon: float
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +107,7 @@ def _iso_to_unix(s: str | None) -> float | None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Date invalide : {s}")
+        raise HTTPException(status_code=400, detail=f"Date invalide : {s}") from None
 
 
 def create_app(config: Config) -> FastAPI:
@@ -135,7 +142,7 @@ def create_app(config: Config) -> FastAPI:
                     recent = list(ctx.state.recent)
                     previous = dict(ctx.state.cells)
 
-                def _recompute() -> tuple[dict, int]:
+                def _recompute(recent=recent, previous=previous) -> tuple[dict, int]:
                     windowed = filter_window(recent, config.analysis.cell_window_minutes)
                     return update_cells(
                         config.home, windowed, previous, config.analysis,
@@ -399,6 +406,28 @@ def create_app(config: Config) -> FastAPI:
             {"type": "FeatureCollection", "features": feats},
             headers={"Content-Disposition": f"attachment; filename=cell_tracks_{rid}.geojson"},
         )
+
+    # ── Vague 4 : géocodage à la demande + déplacement de HOME ────────────────
+    @app.get("/api/geocode")
+    async def geocode_ep(lat: float, lon: float) -> dict:
+        key = f"{round(lat, 2)},{round(lon, 2)}"   # cache ~1 km
+        cached = await run_in_threadpool(ctx.db.geocode_get, key)
+        if cached is not None:
+            return {"name": cached, "cached": True}
+        name = await reverse_nominatim(lat, lon)
+        if name:
+            await run_in_threadpool(ctx.db.geocode_put, key, name)
+        return {"name": name, "cached": False}
+
+    @app.post("/api/home")
+    async def set_home(home: HomeIn) -> dict:
+        if not (-90 <= home.lat <= 90 and -180 <= home.lon <= 180):
+            raise HTTPException(status_code=400, detail="Coordonnées hors limites")
+        # Effet immédiat : le worker MQTT et l'analyse partagent ce même objet config.
+        config.home.lat = home.lat
+        config.home.lon = home.lon
+        persisted = await run_in_threadpool(update_home, config.source_path, home.lat, home.lon)
+        return {"ok": True, "home": {"lat": home.lat, "lon": home.lon}, "persisted": persisted}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

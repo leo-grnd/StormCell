@@ -15,7 +15,6 @@ from blitz.config import AnalysisConfig, HomeConfig  # noqa: E402
 from blitz.geo import unproject_local  # noqa: E402
 from blitz.state import Strike  # noqa: E402
 
-
 HOME = HomeConfig(lat=44.243318, lon=4.716102)
 CFG = AnalysisConfig(cluster_eps_km=8.0, cluster_min_samples=3, cell_window_minutes=30)
 

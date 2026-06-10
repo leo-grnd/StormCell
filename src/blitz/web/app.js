@@ -113,6 +113,12 @@ function addStrike(s) {
   plotStrike(s);
   prependStrikeRow(s);
   maybeAlert(s);
+  // Flash-to-bang : délai approximatif avant le tonnerre pour un impact proche.
+  if (s.distance_km < 60) {
+    const sec = (s.distance_km * 1000) / 343;
+    const t = $("#thunder");
+    if (t) t.textContent = `${s.distance_km.toFixed(1)} km → ~${sec < 90 ? sec.toFixed(0) + " s" : (sec / 60).toFixed(1) + " min"}`;
+  }
 }
 
 // Backfill : à la (re)connexion WS, on reçoit la fenêtre récente d'un coup.
@@ -171,6 +177,8 @@ function trendBadge(t) {
 
 // Index des cercles et cartes par cell_id pour le double-binding carte <-> sidebar
 const cellRefs = new Map();
+// Cellules déjà notifiées pour un lightning jump (évite les doublons).
+const notifiedJump = new Set();
 
 function selectCell(id) {
   // Retire l'état sélectionné de tous les éléments
@@ -210,7 +218,18 @@ function cellPopupHtml(c) {
     ${vel}<br>
     ${trends}<br>
     <i>${eta}</i>${etaEdge}${prob}${jump}<br>
+    <small class="geo-name muted"></small>
     <small>${c.centroid.lat.toFixed(3)}°, ${c.centroid.lon.toFixed(3)}°</small>`;
+}
+
+// Géocodage à la demande : remplit "près de X" quand le popup d'une cellule s'ouvre.
+async function fillGeoName(layer, lat, lon) {
+  try {
+    const g = await fetch(`/api/geocode?lat=${lat}&lon=${lon}`).then((r) => r.json());
+    if (!g.name) return;
+    const el = layer.getPopup()?.getElement()?.querySelector(".geo-name");
+    if (el) el.textContent = "📍 près de " + g.name;
+  } catch { /* géocodage indisponible */ }
 }
 
 function renderCells(cells) {
@@ -242,19 +261,35 @@ function renderCells(cells) {
     });
     circle.bindPopup(cellPopupHtml(c));
     circle.on("click", () => selectCell(c.cell_id));
+    circle.on("popupopen", () => fillGeoName(circle, c.centroid.lat, c.centroid.lon));
     circle.addTo(state.cellLayer);
 
-    // Flèche du vecteur déplacement + cône d'incertitude
+    // Trail passé : la trajectoire déjà parcourue (couleur de sévérité).
+    if (Array.isArray(c.track) && c.track.length >= 2) {
+      L.polyline(c.track, {
+        color: sevCol, weight: 2, opacity: 0.5,
+        dashArray: isGhost ? "2,5" : null,
+      }).addTo(state.cellLayer);
+    }
+
+    // Projection future (pointillé) + jalons T+10/20/30 min + cône d'incertitude
     if (c.velocity_kmh && c.heading_deg != null) {
       const rad = (c.heading_deg * Math.PI) / 180;
-      const projMin = 30;
-      const lenKm = Math.min((c.velocity_kmh / 60) * projMin, 80);
       const cosLat = Math.cos((c.centroid.lat * Math.PI) / 180);
-      const dLat = (lenKm / 111) * Math.cos(rad);
-      const dLon = (lenKm / (111 * cosLat)) * Math.sin(rad);
-      const tip = [c.centroid.lat + dLat, c.centroid.lon + dLon];
+      const at = (min) => {
+        const km = (c.velocity_kmh / 60) * min;
+        return [c.centroid.lat + (km / 111) * Math.cos(rad),
+                c.centroid.lon + (km / (111 * cosLat)) * Math.sin(rad)];
+      };
+      const projMin = 30;
+      const lenKm = (c.velocity_kmh / 60) * projMin;
+      const tip = at(projMin);
       L.polyline([[c.centroid.lat, c.centroid.lon], tip],
-        { color: "#f85149", weight: 3 }).addTo(state.cellLayer);
+        { color: "#f85149", weight: 2, dashArray: "6,5" }).addTo(state.cellLayer);
+      [10, 20, 30].forEach((m) => {
+        L.circleMarker(at(m), { radius: 3, color: "#f85149", fillColor: "#14181f", fillOpacity: 1, weight: 1.5 })
+          .bindTooltip(`+${m} min`, { direction: "top" }).addTo(state.cellLayer);
+      });
 
       // Cône : marge latérale ≈ uncertainty_min × vitesse
       if (c.eta_uncertainty_min) {
@@ -262,15 +297,18 @@ function renderCells(cells) {
         const perpRad = rad + Math.PI / 2;
         const px = (widthKm / 111) * Math.cos(perpRad);
         const py = (widthKm / (111 * cosLat)) * Math.sin(perpRad);
-        const cone = [
+        L.polygon([
           [c.centroid.lat, c.centroid.lon],
           [tip[0] + px, tip[1] + py],
           [tip[0] - px, tip[1] - py],
-        ];
-        L.polygon(cone, {
-          color: "#f85149", weight: 0, fillColor: "#f85149", fillOpacity: 0.15,
-        }).addTo(state.cellLayer);
+        ], { color: "#f85149", weight: 0, fillColor: "#f85149", fillOpacity: 0.15 }).addTo(state.cellLayer);
       }
+    }
+
+    // Notification d'orage sévère (lightning jump) — une fois par cellule.
+    if (c.jump_detected && !notifiedJump.has(c.cell_id)) {
+      notifiedJump.add(c.cell_id);
+      notify("⚠ Orage sévère", `Cellule #${c.cell_id} : intensification rapide (jump)`);
     }
 
     // Carte sidebar
@@ -299,6 +337,9 @@ function renderCells(cells) {
     list.appendChild(card);
     cellRefs.set(c.cell_id, { circle, card, data: c });
   });
+
+  // Oublier les jumps des cellules disparues (pour pouvoir re-notifier au retour).
+  for (const id of [...notifiedJump]) if (!cellRefs.has(id)) notifiedJump.delete(id);
 }
 
 // Bascule sur l'onglet Live et zoome/anime jusqu'à la cellule, puis ouvre le popup.
@@ -326,7 +367,7 @@ $("#alert-sound").checked = state.alertEnabled;
 $("#alert-sound").addEventListener("change", (e) => {
   state.alertEnabled = e.target.checked;
   localStorage.setItem("alert-sound", state.alertEnabled ? "1" : "0");
-  if (state.alertEnabled) ensureAudio();   // débloque l'audio via le geste utilisateur
+  if (state.alertEnabled) { ensureAudio(); ensureNotifyPermission(); }  // geste utilisateur
 });
 
 // ── Toggle fuseau (local ⇄ UTC) ──────────────────────────────────────────────
@@ -364,10 +405,27 @@ function playBeep() {
   } catch (e) { /* audio indisponible */ }
 }
 
+// ── Notifications navigateur (throttlées) ────────────────────────────────────
+function ensureNotifyPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+let _lastNotify = 0;
+function notify(title, body) {
+  if (!state.alertEnabled) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const now = Date.now();
+  if (now - _lastNotify < 15000) return;   // anti-spam 15 s
+  _lastNotify = now;
+  try { new Notification(title, { body }); } catch { /* ignore */ }
+}
+
 function maybeAlert(s) {
   if (!state.alertEnabled || !state.config) return;
   if (s.distance_km <= state.config.alert_distance_km) {
     playBeep();
+    notify("⚡ Foudre proche", `${s.distance_km.toFixed(1)} km de chez vous`);
   }
 }
 
@@ -699,3 +757,90 @@ async function showCellTrack(run_id, cell_id) {
 }
 
 $("#an-load").addEventListener("click", loadAnalyse);
+
+// ── Déplacement de HOME (clic sur la carte) ──────────────────────────────────
+let homePickMode = false;
+const setHomeBtn = $("#set-home");
+if (setHomeBtn) setHomeBtn.addEventListener("click", () => {
+  homePickMode = !homePickMode;
+  setHomeBtn.classList.toggle("active", homePickMode);
+  mapLive.getContainer().style.cursor = homePickMode ? "crosshair" : "";
+});
+mapLive.on("click", async (e) => {
+  if (!homePickMode) return;
+  homePickMode = false;
+  if (setHomeBtn) setHomeBtn.classList.remove("active");
+  mapLive.getContainer().style.cursor = "";
+  const lat = e.latlng.lat, lon = e.latlng.lng;
+  try {
+    const r = await fetch("/api/home", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat, lon }),
+    });
+    if (!r.ok) return;
+    if (state.homeMarker) state.homeMarker.setLatLng([lat, lon]);
+    if (state.radiusCircle) state.radiusCircle.setLatLng([lat, lon]);
+    if (state.config) state.config.home = { lat, lon };
+    $("#home-pos").textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  } catch (err) { console.error("set-home", err); }
+});
+
+// ── Overlay radar de précipitations (RainViewer, API publique gratuite) ──────
+const radar = { host: "", frames: [], idx: 0, layer: null, timer: null };
+
+async function radarInit() {
+  try {
+    const j = await fetch("https://api.rainviewer.com/public/weather-maps.json").then((r) => r.json());
+    radar.host = j.host;
+    radar.frames = [...(j.radar?.past || []), ...(j.radar?.nowcast || [])];
+    if (!radar.frames.length) return false;
+    radar.idx = Math.max(0, (j.radar?.past?.length || 1) - 1);  // dernière frame "passée"
+    $("#radar-slider").max = radar.frames.length - 1;
+    $("#radar-slider").value = radar.idx;
+    return true;
+  } catch (e) { console.warn("radar indisponible", e); return false; }
+}
+
+function radarShow(i) {
+  if (!radar.frames.length) return;
+  radar.idx = Math.max(0, Math.min(i, radar.frames.length - 1));
+  const f = radar.frames[radar.idx];
+  // RainViewer ne sert le radar que jusqu'au zoom 7 ; au-delà on ré-échelonne
+  // les tuiles z7 (maxNativeZoom) au lieu d'afficher « Zoom Level Not Supported ».
+  const layer = L.tileLayer(`${radar.host}${f.path}/256/{z}/{x}/{y}/2/1_1.png`, {
+    opacity: 0.6, zIndex: 250, maxNativeZoom: 7, maxZoom: 18,
+  });
+  layer.addTo(mapLive);
+  if (radar.layer) { const old = radar.layer; setTimeout(() => mapLive.removeLayer(old), 150); }
+  radar.layer = layer;
+  $("#radar-slider").value = radar.idx;
+  const d = new Date(f.time * 1000);
+  $("#radar-time").textContent = state.useLocal ? d.toTimeString().slice(0, 5) : d.toISOString().substr(11, 5) + "Z";
+}
+
+function radarPlay() {
+  if (radar.timer || !radar.frames.length) return;
+  radar.timer = setInterval(() => radarShow((radar.idx + 1) % radar.frames.length), 650);
+  $("#radar-play").textContent = "⏸";
+}
+function radarStop() { clearInterval(radar.timer); radar.timer = null; $("#radar-play").textContent = "▶"; }
+function radarOff() {
+  radarStop();
+  if (radar.layer) { mapLive.removeLayer(radar.layer); radar.layer = null; }
+  $("#radar-time").textContent = "";
+}
+
+$("#radar-on").addEventListener("change", async (e) => {
+  if (e.target.checked) {
+    if (!radar.frames.length) {
+      const ok = await radarInit();
+      if (!ok) { e.target.checked = false; $("#radar-time").textContent = "indispo"; return; }
+    }
+    radarShow(radar.idx);
+    radarPlay();
+  } else {
+    radarOff();
+  }
+});
+$("#radar-play").addEventListener("click", () => { if (radar.timer) radarStop(); else radarPlay(); });
+$("#radar-slider").addEventListener("input", (e) => { radarStop(); radarShow(+e.target.value); });

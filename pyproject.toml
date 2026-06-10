@@ -36,3 +36,15 @@ blitz = ["web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W: style & whitespace, F: pyflakes (imports/undefined), B: bugbear, I: import order
+select = ["E", "W", "F", "B", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Les tests insèrent src/ dans sys.path avant les imports (exécution sans install).
+"tests/*" = ["E402"]

@@ -35,8 +35,8 @@ def cmd_tui(cfg: Config) -> int:
     from rich.panel import Panel
     from rich.table import Table
 
-    from .geo import SPEED_OF_SOUND_MS, cardinal, color_for_distance
     from .db import Database
+    from .geo import SPEED_OF_SOUND_MS, cardinal, color_for_distance
     from .mqtt_worker import MqttWorker
     from .state import SharedState, Strike
 

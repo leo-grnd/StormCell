@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS predictions (
     closest_km        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_predictions_ts ON predictions(ts_made);
+
+-- Cache de géocodage inverse (commune la plus proche d'un point).
+CREATE TABLE IF NOT EXISTS geocache (
+    key   TEXT PRIMARY KEY,   -- "lat,lon" arrondi (~1 km)
+    name  TEXT,
+    ts    REAL
+);
 """
 
 _INSERT_SQL = (
@@ -296,11 +303,14 @@ class Database:
     ) -> list[dict[str, Any]]:
         conds, params = [], []
         if from_unix is not None:
-            conds.append("last_seen >= ?"); params.append(from_unix)
+            conds.append("last_seen >= ?")
+            params.append(from_unix)
         if to_unix is not None:
-            conds.append("first_seen <= ?"); params.append(to_unix)
+            conds.append("first_seen <= ?")
+            params.append(to_unix)
         if min_strikes:
-            conds.append("total_strikes >= ?"); params.append(min_strikes)
+            conds.append("total_strikes >= ?")
+            params.append(min_strikes)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         sql = f"SELECT * FROM cells {where} ORDER BY last_seen DESC LIMIT ?"
         params.append(limit)
@@ -338,7 +348,10 @@ class Database:
 
     def strike_ts_in_ring(self, ring_km: float, from_unix: float, to_unix: float) -> list[float]:
         """Timestamps des impacts entrés dans l'anneau (distance ≤ ring) sur la fenêtre."""
-        sql = "SELECT ts_unix FROM strikes WHERE distance_km <= ? AND ts_unix >= ? AND ts_unix <= ? ORDER BY ts_unix ASC"
+        sql = (
+            "SELECT ts_unix FROM strikes "
+            "WHERE distance_km <= ? AND ts_unix >= ? AND ts_unix <= ? ORDER BY ts_unix ASC"
+        )
         with self._lock:
             self._flush_locked()
             rows = self.conn.execute(sql, (ring_km, from_unix, to_unix)).fetchall()
@@ -382,6 +395,23 @@ class Database:
             self._flush_locked()
             rows = self.conn.execute(sql, (bin_km, max_km, f"-{int(days)} days")).fetchall()
         return [dict(r) for r in rows]
+
+    # ── cache de géocodage ───────────────────────────────────────────────────
+    def geocode_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute("SELECT name FROM geocache WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def geocode_put(self, key: str, name: str) -> None:
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO geocache (key, name, ts) VALUES (?, ?, ?)",
+                    (key, name, time.time()),
+                )
+                self.conn.commit()
+            except sqlite3.Error:
+                logger.exception("Erreur écriture geocache")
 
     def close(self) -> None:
         self._closed = True

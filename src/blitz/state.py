@@ -94,6 +94,8 @@ class Cell:
             "parent_id": self.parent_id,
             "merged_from": self.merged_from,
             "misses": self.misses,
+            # Trajectoire passée compacte [lat, lon] pour tracer le trail côté carte.
+            "track": [[round(p[1], 4), round(p[2], 4)] for p in self.track[-30:]],
         }
 
 
