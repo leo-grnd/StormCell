@@ -96,6 +96,8 @@ class Cell:
             "misses": self.misses,
             # Trajectoire passée compacte [lat, lon] pour tracer le trail côté carte.
             "track": [[round(p[1], 4), round(p[2], 4)] for p in self.track[-30:]],
+            # Historique du taux d'éclairs (sparkline dans la carte de cellule).
+            "spark": [round(v, 1) for _t, v in self.intensity_history[-24:]],
         }
 
 
