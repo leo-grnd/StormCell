@@ -198,7 +198,7 @@ class Database:
         if max_distance_km is not None:
             conds.append("distance_km <= ?")
             params.append(max_distance_km)
-        if min_mds is not None:
+        if min_mds:  # 0 ou None ⇒ pas de filtre (le broker peut ne pas fournir le MDS)
             conds.append("mds >= ?")
             params.append(min_mds)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""

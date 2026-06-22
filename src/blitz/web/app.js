@@ -567,7 +567,7 @@ async function loadHistory() {
   if ($("#hist-from").value) params.set("from", new Date($("#hist-from").value).toISOString());
   if ($("#hist-to").value) params.set("to", new Date($("#hist-to").value).toISOString());
   if ($("#hist-dist").value) params.set("max_distance", $("#hist-dist").value);
-  if ($("#hist-mds").value) params.set("min_mds", $("#hist-mds").value);
+  if (+$("#hist-mds").value > 0) params.set("min_mds", $("#hist-mds").value);
   const j = await fetch("/api/strikes/history?" + params).then((r) => r.json());
   histStrikes = j.strikes;
   $("#hist-count").textContent = `${histStrikes.length} impacts`;
