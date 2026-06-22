@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .analysis import filter_window, update_cells
+from .blitz_ws import BlitzortungWsWorker, probe_endpoints
 from .config import Config, update_home
 from .db import Database
 from .geocode import reverse_nominatim
@@ -74,7 +75,7 @@ class AppContext:
         self.db = Database(Path(config.db.path))
         self.state.stats["logged_total"] = self.db.count()
         self.hub = Hub()
-        self.worker: MqttWorker | None = None
+        self.worker: MqttWorker | BlitzortungWsWorker | None = None
         self._next_cell_id = 1
         # ── Vague 3 : mémoire & vérification ─────────────────────────────────
         self.run_id = uuid.uuid4().hex[:12]   # les cell_id repartent à 1 à chaque run
@@ -196,7 +197,10 @@ def create_app(config: Config) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        ctx.worker = MqttWorker(config, ctx.state, on_nearby=ctx.on_nearby)
+        if config.source.type == "mqtt":
+            ctx.worker = MqttWorker(config, ctx.state, on_nearby=ctx.on_nearby)
+        else:
+            ctx.worker = BlitzortungWsWorker(config, ctx.state, on_nearby=ctx.on_nearby)
         ctx.worker.start()
         pump_task = asyncio.create_task(mqtt_pump(), name="mqtt_pump")
         cells_task = asyncio.create_task(cells_loop(), name="cells_loop")
@@ -248,6 +252,11 @@ def create_app(config: Config) -> FastAPI:
         snap["alert_distance_km"] = config.filter.alert_distance_km
         snap["server_time"] = time.time()
         snap["run_id"] = ctx.run_id
+        snap["source_type"] = config.source.type
+        snap["probe_est_s"] = (
+            len(config.source.ws_endpoints) * config.source.ws_probe_seconds
+            if config.source.type == "blitzortung_ws" else 2
+        )
         return snap
 
     @app.get("/api/strikes/live")
@@ -281,6 +290,14 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/cells")
     async def get_cells() -> dict:
         return {"cells": [c.to_dict() for c in ctx.state.snapshot_cells()]}
+
+    @app.get("/api/source/probe")
+    async def source_probe() -> dict:
+        """Mesure la latence de chaque endpoint Blitzortung et renvoie le classement."""
+        res = await run_in_threadpool(
+            probe_endpoints, config.source.ws_endpoints, config.source.ws_probe_seconds
+        )
+        return {"endpoints": res, "current": ctx.state.snapshot_stats().get("source")}
 
     # ── Vague 3 : vérification, analytics, catalogue, exports ─────────────────
     @app.get("/api/verification")

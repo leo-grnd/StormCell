@@ -11,6 +11,19 @@
 </head>
 <body>
 
+<!-- ════════════════ Overlay de chargement (sondage des endpoints) ════════════════ -->
+<div id="boot-overlay">
+  <div class="boot-card">
+    <div class="boot-mark">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+    </div>
+    <div class="boot-title">StormCell <span>NOWCAST</span></div>
+    <div class="boot-phrase" id="boot-phrase">Connexion au réseau Blitzortung…</div>
+    <div class="boot-track"><div class="boot-bar" id="boot-bar"></div></div>
+    <div class="boot-hint" id="boot-hint">Sélection du serveur le plus rapide</div>
+  </div>
+</div>
+
 <header>
   <div class="brand">
     <div class="brand-mark">
@@ -32,6 +45,7 @@
     <div class="live-pill">
       <span id="mqtt-dot" class="dot dot-red"></span>
       <span id="mqtt-text">…</span>
+      <span class="run mono" id="lat-badge" title="Délai du flux : âge médian des éclairs à la réception">—</span>
       <span class="run mono" id="run-clock">00:00:00</span>
     </div>
     <button id="tz-toggle" class="ctrl-btn">Local</button>

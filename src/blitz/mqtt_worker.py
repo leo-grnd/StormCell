@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
@@ -56,6 +57,7 @@ class MqttWorker:
     def _on_connect(self, client: mqtt.Client, userdata, flags, rc, *args) -> None:
         if rc == 0:
             self.state.set_mqtt_connected(True)
+            self.state.set_source(f"mqtt:{self.cfg.mqtt.host}")
             logger.info("Connecté à %s:%s — abonnement à %s",
                         self.cfg.mqtt.host, self.cfg.mqtt.port, self.cfg.mqtt.topic)
             client.subscribe(self.cfg.mqtt.topic)
@@ -81,11 +83,14 @@ class MqttWorker:
 
         self.state.bump_world()
 
+        ts = data.get("time", 0) / 1e9
+        if ts > 0:
+            self.state.record_latency(time.time() - ts, None)
+
         dist = haversine(self.cfg.home.lat, self.cfg.home.lon, lat, lon)
         if dist > self.cfg.filter.max_distance_km:
             return
 
-        ts = data.get("time", 0) / 1e9
         brg = bearing(self.cfg.home.lat, self.cfg.home.lon, lat, lon)
         sig = data.get("sig")
         if isinstance(sig, list):

@@ -406,3 +406,42 @@ aside.sidebar {
 .geo-name { display: block; color: var(--brand-hi); margin: 3px 0 1px; }
 .muted { color: var(--text-faint); }
 .rose-lbl { fill: var(--text-faint); font-family: var(--mono); font-size: 11px; }
+
+/* ── Overlay de chargement (sondage/sélection des endpoints au démarrage) ───── */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center;
+  background: var(--bg-grad), var(--bg);
+  transition: opacity .55s ease;
+}
+#boot-overlay::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(600px 300px at 50% 38%, rgba(90,162,255,.08), transparent 70%);
+}
+#boot-overlay.done { opacity: 0; pointer-events: none; }
+.boot-card { position: relative; z-index: 1; width: min(440px, 86vw); text-align: center; padding: 0 24px; }
+.boot-mark {
+  width: 62px; height: 62px; margin: 0 auto 20px; border-radius: 16px;
+  display: grid; place-items: center; color: var(--brand-hi);
+  background: linear-gradient(155deg, #1c2941, #0e1726); border: 1px solid #2b3c58;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 30px -6px var(--brand-glow);
+  animation: bootPulse 1.7s ease-in-out infinite;
+}
+.boot-mark svg { width: 30px; height: 30px; filter: drop-shadow(0 0 6px var(--brand-glow)); }
+@keyframes bootPulse {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 20px -8px var(--brand-glow); transform: translateY(0); }
+  50% { box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 42px 0 var(--brand-glow); transform: translateY(-2px); }
+}
+.boot-title { font-size: 21px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 8px; }
+.boot-title span {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .18em; color: var(--brand);
+  border: 1px solid #28406a; padding: 2px 5px 1px; border-radius: 4px; vertical-align: middle;
+  margin-left: 6px; background: rgba(90,162,255,.07);
+}
+.boot-phrase { font-family: var(--mono); font-size: 13px; color: var(--text-dim); min-height: 19px; margin-bottom: 18px; transition: opacity .2s ease; }
+.boot-track { height: 6px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line-soft); overflow: hidden; }
+.boot-bar {
+  height: 100%; width: 6%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand-dim), var(--brand), var(--brand-hi));
+  box-shadow: 0 0 12px var(--brand-glow);
+}
+.boot-hint { margin-top: 10px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); }

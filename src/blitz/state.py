@@ -117,7 +117,13 @@ class SharedState:
             "logged_total": 0,
             "last_message_at": None,
             "mqtt_connected": False,
+            "source": None,        # ex. "ws1.blitzortung.org" ou "mqtt:blitzortung.ha.sed.pl"
+            "latency_s": None,     # médiane (now - heure de l'éclair) — délai du flux
+            "delay_s": None,       # médiane du champ "delay" Blitzortung (latence réseau de détection)
         }
+        # Fenêtres glissantes pour les médianes de latence (tous impacts mondiaux).
+        self.latencies: deque[float] = deque(maxlen=500)
+        self.delays: deque[float] = deque(maxlen=500)
 
     def add_strike(self, s: Strike) -> None:
         with self.lock:
@@ -140,9 +146,30 @@ class SharedState:
         with self.lock:
             return list(self.cells.values())
 
+    def record_latency(self, latency_s: float, delay_s: float | None = None) -> None:
+        """Enregistre la latence de réception (now - heure éclair) et le délai réseau."""
+        with self.lock:
+            self.latencies.append(latency_s)
+            if delay_s is not None:
+                self.delays.append(delay_s)
+
+    def set_source(self, name: str) -> None:
+        with self.lock:
+            self.stats["source"] = name
+
+    @staticmethod
+    def _median(values: deque[float]) -> float | None:
+        if not values:
+            return None
+        s = sorted(values)
+        return round(s[len(s) // 2], 1)
+
     def snapshot_stats(self) -> dict[str, Any]:
         with self.lock:
-            return dict(self.stats)
+            snap = dict(self.stats)
+            snap["latency_s"] = self._median(self.latencies)
+            snap["delay_s"] = self._median(self.delays)
+            return snap
 
     def set_mqtt_connected(self, connected: bool) -> None:
         with self.lock:

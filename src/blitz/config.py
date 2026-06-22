@@ -33,6 +33,15 @@ class MqttConfig:
 
 
 @dataclass
+class SourceConfig:
+    # "blitzortung_ws" : flux WebSocket direct (≈ quelques s de latence, recommandé)
+    # "mqtt"           : broker communautaire re-publié (latence ≈ 1-2 min)
+    type: str = "blitzortung_ws"
+    ws_endpoints: list[str] = field(default_factory=lambda: ["ws1", "ws7", "ws8"])
+    ws_probe_seconds: float = 4.0   # durée de mesure de latence par endpoint au démarrage
+
+
+@dataclass
 class DbConfig:
     path: str = "lightning_log.db"
 
@@ -82,6 +91,7 @@ class Config:
     home: HomeConfig = field(default_factory=HomeConfig)
     filter: FilterConfig = field(default_factory=FilterConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
+    source: SourceConfig = field(default_factory=SourceConfig)
     db: DbConfig = field(default_factory=DbConfig)
     web: WebConfig = field(default_factory=WebConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
@@ -121,6 +131,7 @@ def load_config(path: Path | str | None = None) -> Config:
             "home": cfg.home,
             "filter": cfg.filter,
             "mqtt": cfg.mqtt,
+            "source": cfg.source,
             "db": cfg.db,
             "web": cfg.web,
             "analysis": cfg.analysis,

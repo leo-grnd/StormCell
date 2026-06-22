@@ -11,6 +11,13 @@ max_distance_km = 10000
 max_strikes_shown = 15   # ligne(s) du TUI legacy
 alert_distance_km = 15   # alerte sonore frontend si impact sous ce seuil
 
+[source]
+# "blitzortung_ws" : flux WebSocket direct (latence ≈ quelques secondes) — recommandé
+# "mqtt"           : broker communautaire re-publié (latence ≈ 1-2 minutes)
+type = "blitzortung_ws"
+ws_endpoints = ["ws1", "ws7", "ws8"]   # candidats — le plus rapide est choisi au démarrage
+ws_probe_seconds = 4                    # durée de mesure de latence par endpoint
+
 [mqtt]
 host = "blitzortung.ha.sed.pl"
 port = 1883

@@ -34,6 +34,62 @@ function setText(sel, val) {
   }
 }
 
+// ── Overlay de chargement (sondage/sélection des endpoints au démarrage) ─────
+const boot = { done: false, est: 12, phraseTimer: null, pollTimer: null };
+function bootDone() {
+  if (boot.done) return;
+  boot.done = true;
+  clearInterval(boot.phraseTimer);
+  clearInterval(boot.pollTimer);
+  const ov = $("#boot-overlay"), bar = $("#boot-bar"), ph = $("#boot-phrase"), hint = $("#boot-hint");
+  if (bar) { bar.style.transition = "width .4s ease"; bar.style.width = "100%"; }
+  if (ph) ph.textContent = "Flux prêt — bon orage ⚡";
+  if (hint) hint.textContent = "";
+  if (ov) setTimeout(() => { ov.classList.add("done"); setTimeout(() => ov.remove(), 650); }, 320);
+}
+function bootInit() {
+  const ov = $("#boot-overlay");
+  if (!ov) return;
+  const phrases = [
+    "Connexion au réseau Blitzortung…",
+    "Mesure de la latence des serveurs…",
+    "Sélection de l'endpoint le plus rapide…",
+    "Calcul des orages…",
+    "Triangulation des impacts…",
+    "Étalonnage du nowcast…",
+  ];
+  const ph = $("#boot-phrase");
+  let pi = 0;
+  const nextPhrase = () => {
+    if (!ph) return;
+    ph.style.opacity = "0";
+    setTimeout(() => { ph.textContent = phrases[pi % phrases.length]; ph.style.opacity = "1"; pi++; }, 180);
+  };
+  nextPhrase();
+  boot.phraseTimer = setInterval(nextPhrase, 1900);
+
+  const bar = $("#boot-bar");
+  const startBar = () => {
+    if (!bar) return;
+    bar.style.transition = "none"; bar.style.width = "6%";
+    requestAnimationFrame(() => {
+      bar.style.transition = `width ${boot.est}s cubic-bezier(.2,.7,.25,1)`;
+      bar.style.width = "92%";
+    });
+  };
+  fetch("/api/stats").then((r) => r.json()).then((s) => {
+    if (s.probe_est_s) boot.est = Math.max(2, s.probe_est_s);
+    if (s.source) { bootDone(); return; }   // déjà connecté (ex. source mqtt rapide)
+    startBar();
+  }).catch(startBar);
+
+  boot.pollTimer = setInterval(async () => {
+    try { const s = await fetch("/api/stats").then((r) => r.json()); if (s.source) bootDone(); } catch { /* */ }
+  }, 600);
+  setTimeout(bootDone, 35000);   // garde-fou : ne jamais bloquer l'utilisateur
+}
+bootInit();
+
 // ── Tabs ────────────────────────────────────────────────────────────────────
 $$(".tab").forEach((t) => t.addEventListener("click", () => {
   $$(".tab").forEach((x) => x.classList.toggle("active", x === t));
@@ -465,6 +521,18 @@ function updateStats(s) {
   if (closest) closest.innerHTML = (s.closest_km != null ? s.closest_km.toFixed(1) : "—") + ' <small>km</small>';
   setText("#st-logged", "+" + (s.logged_session ?? 0));
 
+  // Délai du flux (médiane) — vert ≤ 12 s, orange ≤ 30 s, rouge au-delà.
+  const lb = $("#lat-badge");
+  if (lb) {
+    if (s.latency_s != null) {
+      lb.textContent = "⏱ " + (s.latency_s < 60 ? `${s.latency_s.toFixed(0)} s` : `${(s.latency_s / 60).toFixed(1)} min`);
+      lb.style.color = s.latency_s <= 12 ? "var(--sev0)" : s.latency_s <= 30 ? "var(--sev2)" : "var(--sev5)";
+      lb.title = `Délai du flux (médiane) · source ${s.source ?? "?"}` + (s.delay_s != null ? ` · délai réseau ${s.delay_s} s` : "");
+    } else {
+      lb.textContent = "—"; lb.style.color = "";
+    }
+  }
+
   const dot = $("#mqtt-dot"), text = $("#mqtt-text");
   if (s.last_message_at) {
     const age = Date.now() / 1000 - s.last_message_at;
@@ -476,6 +544,8 @@ function updateStats(s) {
     dot.className = "dot dot-red";
     text.textContent = s.mqtt_connected ? "en attente" : "hors-ligne";
   }
+
+  if (s.source) bootDone();   // flux connecté → retire l'overlay de chargement
 }
 
 function updateRate() {
