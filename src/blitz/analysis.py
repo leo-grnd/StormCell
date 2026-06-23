@@ -74,18 +74,28 @@ def _count_flashes(strikes: list[Strike], dt_s: float, dd_km: float) -> int:
 
     Blitzortung émet des strokes ; un éclair (flash) en compte souvent plusieurs.
     Le taux d'éclairs/min (base du lightning jump) doit se calculer en flashs.
+
+    Fenêtre glissante : seuls les flashs « actifs » (dernier stroke dans `dt_s`)
+    restent candidats — les plus vieux ne peuvent plus matcher (strokes triés par
+    temps). Coût O(n·k) avec k = flashs actifs (petit) au lieu de O(n²), à résultat
+    strictement identique à la version naïve.
     """
-    flashes: list[tuple[float, float, float]] = []  # représentant (t, lat, lon)
+    flash_count = 0
+    active: list[list[float]] = []  # [t, lat, lon] des flashs encore matchables
     for s in sorted(strikes, key=lambda x: x.ts_unix):
+        cutoff = s.ts_unix - dt_s
+        if active:
+            active = [f for f in active if f[0] >= cutoff]  # purge des flashs expirés
         joined = False
-        for i, (ft, flat, flon) in enumerate(flashes):
-            if s.ts_unix - ft <= dt_s and haversine(flat, flon, s.lat, s.lon) <= dd_km:
-                flashes[i] = (s.ts_unix, s.lat, s.lon)
+        for f in active:
+            if haversine(f[1], f[2], s.lat, s.lon) <= dd_km:
+                f[0], f[1], f[2] = s.ts_unix, s.lat, s.lon  # le flash « suit » le stroke
                 joined = True
                 break
         if not joined:
-            flashes.append((s.ts_unix, s.lat, s.lon))
-    return len(flashes)
+            active.append([s.ts_unix, s.lat, s.lon])
+            flash_count += 1
+    return flash_count
 
 
 # ─── DBSCAN haversine ───────────────────────────────────────────────────────
@@ -220,14 +230,26 @@ def _associate(raws: list[_RawCluster], previous: dict[int, Cell], cfg: Analysis
         return {}
     base_gate = 2.0 * cfg.cluster_eps_km
     big = 1e7
-    cost = np.full((len(raws), len(prev_items)), big, dtype=float)
-    for i, raw in enumerate(raws):
-        for j, (_pid, cell) in enumerate(prev_items):
-            d = haversine(raw.centroid_lat, raw.centroid_lon, cell.centroid_lat, cell.centroid_lon)
-            dt = max(raw.last_seen - cell.last_seen, 0.0)
-            reach = (cell.velocity_kmh or 0.0) / 3600.0 * dt   # déplacement plausible sur dt
-            if d <= base_gate + reach:
-                cost[i, j] = d
+
+    # Matrice de coûts (n_raws × n_prev) en haversine vectorisé (broadcast NumPy),
+    # au lieu d'une double boucle Python avec un appel scalaire par paire.
+    r_lat = np.radians([r.centroid_lat for r in raws])
+    r_lon = np.radians([r.centroid_lon for r in raws])
+    r_last = np.asarray([r.last_seen for r in raws], dtype=float)
+    p_lat = np.radians([c.centroid_lat for _pid, c in prev_items])
+    p_lon = np.radians([c.centroid_lon for _pid, c in prev_items])
+    p_last = np.asarray([c.last_seen for _pid, c in prev_items], dtype=float)
+    p_vel = np.asarray([(c.velocity_kmh or 0.0) for _pid, c in prev_items], dtype=float)
+
+    dphi = p_lat[None, :] - r_lat[:, None]
+    dlmb = p_lon[None, :] - r_lon[:, None]
+    a = np.sin(dphi / 2) ** 2 + np.cos(r_lat[:, None]) * np.cos(p_lat[None, :]) * np.sin(dlmb / 2) ** 2
+    d = 2.0 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+
+    dt = np.clip(r_last[:, None] - p_last[None, :], 0.0, None)
+    gate = base_gate + (p_vel[None, :] / 3600.0) * dt   # déplacement plausible sur dt
+    cost = np.where(d <= gate, d, big)
+
     rows, cols = linear_sum_assignment(cost)
     out: dict[int, int] = {}
     for i, j in zip(rows, cols, strict=True):

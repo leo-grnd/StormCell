@@ -216,6 +216,30 @@ class FlashGroupingTests(unittest.TestCase):
         strokes = [make_strike(0, 0, 1000.0), make_strike(40, 0, 1000.0)]
         self.assertEqual(_count_flashes(strokes, dt_s=0.5, dd_km=10.0), 2)
 
+    def test_matches_naive_reference(self):
+        """La version fenêtre-glissante (F1) doit donner exactement le même compte
+        que l'implémentation naïve O(n²) sur des entrées aléatoires."""
+        from blitz.geo import haversine
+
+        def naive(strokes, dt_s, dd_km):
+            flashes: list[tuple[float, float, float]] = []
+            for s in sorted(strokes, key=lambda x: x.ts_unix):
+                joined = False
+                for i, (ft, flat, flon) in enumerate(flashes):
+                    if s.ts_unix - ft <= dt_s and haversine(flat, flon, s.lat, s.lon) <= dd_km:
+                        flashes[i] = (s.ts_unix, s.lat, s.lon)
+                        joined = True
+                        break
+                if not joined:
+                    flashes.append((s.ts_unix, s.lat, s.lon))
+            return len(flashes)
+
+        for seed in range(8):
+            rng = random.Random(seed)
+            strokes = [make_strike(rng.uniform(-15, 15), rng.uniform(-15, 15),
+                                   1000.0 + rng.uniform(0, 6)) for _ in range(120)]
+            self.assertEqual(_count_flashes(strokes, 0.5, 10.0), naive(strokes, 0.5, 10.0))
+
 
 class AssociationTests(unittest.TestCase):
     def _x(self, c):

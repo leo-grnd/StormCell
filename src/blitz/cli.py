@@ -151,6 +151,16 @@ def cmd_stats(cfg: Config, days: int) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Banc d'essai du pipeline de clustering/tracking (orage synthétique)."""
+    from .bench import run_bench
+
+    return run_bench(
+        strikes=args.strikes, cells=args.cells, ticks=args.ticks,
+        radius_km=args.radius, seed=args.seed, compare=args.compare,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m blitz", description="Moniteur Blitzortung")
     p.add_argument("--config", type=Path, help="Fichier de config TOML")
@@ -165,6 +175,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_stats = sub.add_parser("stats", help="Rapport texte depuis la DB")
     sp_stats.add_argument("--days", type=int, default=30)
+
+    sp_bench = sub.add_parser("bench", help="Banc d'essai perf du pipeline d'analyse")
+    sp_bench.add_argument("--strikes", type=int, default=15_000, help="strokes par tick")
+    sp_bench.add_argument("--cells", type=int, default=8, help="nombre de cellules simulées")
+    sp_bench.add_argument("--ticks", type=int, default=12, help="nombre de ticks rejoués")
+    sp_bench.add_argument("--radius", type=float, default=12.0, help="rayon des cellules (km)")
+    sp_bench.add_argument("--seed", type=int, default=1234)
+    sp_bench.add_argument("--compare", action="store_true", help="comparer grille ON vs OFF")
     return p
 
 
@@ -188,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_tui(cfg)
     if cmd == "stats":
         return cmd_stats(cfg, args.days)
+    if cmd == "bench":
+        return cmd_bench(args)
     print(f"Commande inconnue : {cmd}", file=sys.stderr)
     return 2
 

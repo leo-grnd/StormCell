@@ -124,6 +124,10 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        # Tuning lecture/écriture : cache page de 64 MiB, mmap 256 MiB, temp en RAM.
+        self.conn.execute("PRAGMA cache_size=-65536")      # négatif ⇒ KiB (≈ 64 MiB)
+        self.conn.execute("PRAGMA mmap_size=268435456")    # 256 MiB
+        self.conn.execute("PRAGMA temp_store=MEMORY")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
@@ -209,6 +213,8 @@ class Database:
         with self._lock:
             try:
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # Laisse SQLite rafraîchir ses stats d'index (requêtes history plus rapides).
+                self.conn.execute("PRAGMA optimize")
                 result["checkpointed"] = True
             except sqlite3.Error:
                 logger.exception("Erreur checkpoint WAL")
@@ -533,6 +539,10 @@ class Database:
         try:
             with self._lock:
                 self._flush_locked()
+                try:
+                    self.conn.execute("PRAGMA optimize")   # recommandé avant fermeture
+                except sqlite3.Error:
+                    pass
                 self.conn.close()
         except sqlite3.Error:
             logger.exception("Erreur à la fermeture SQLite")
