@@ -138,6 +138,12 @@ class SharedState:
             self.stats["total_world"] += 1
             self.stats["last_message_at"] = time.time()
 
+    def prune_beyond(self, max_km: float) -> None:
+        """Retire du buffer les impacts hors de l'anneau (ex. après réduction du rayon)."""
+        with self.lock:
+            kept = [s for s in self.recent if s.distance_km <= max_km]
+            self.recent = deque(kept, maxlen=self.recent.maxlen)
+
     def snapshot_recent_since(self, since_unix: float) -> list[Strike]:
         with self.lock:
             return [s for s in self.recent if s.ts_unix >= since_unix]

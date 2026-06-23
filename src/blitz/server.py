@@ -21,8 +21,9 @@ from pydantic import BaseModel
 
 from .analysis import filter_window, update_cells
 from .blitz_ws import BlitzortungWsWorker, probe_endpoints
-from .config import Config, update_home
+from .config import Config, update_config, update_home
 from .db import Database
+from .geo import haversine
 from .geocode import reverse_nominatim
 from .mqtt_worker import MqttWorker
 from .state import SharedState, Strike
@@ -32,6 +33,16 @@ from .verification import evaluate
 class HomeIn(BaseModel):
     lat: float
     lon: float
+
+
+class ConfigIn(BaseModel):
+    home_lat: float | None = None
+    home_lon: float | None = None
+    max_distance_km: float | None = None
+    alert_distance_km: float | None = None
+    cluster_eps_km: float | None = None
+    cluster_min_samples: int | None = None
+    cell_window_minutes: int | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +155,11 @@ def create_app(config: Config) -> FastAPI:
                     previous = dict(ctx.state.cells)
 
                 def _recompute(recent=recent, previous=previous) -> tuple[dict, int]:
-                    windowed = filter_window(recent, config.analysis.cell_window_minutes)
+                    max_d = config.filter.max_distance_km
+                    windowed = [
+                        s for s in filter_window(recent, config.analysis.cell_window_minutes)
+                        if s.distance_km <= max_d
+                    ]
                     return update_cells(
                         config.home, windowed, previous, config.analysis,
                         next_id=ctx._next_cell_id,
@@ -445,6 +460,62 @@ def create_app(config: Config) -> FastAPI:
         config.home.lon = home.lon
         persisted = await run_in_threadpool(update_home, config.source_path, home.lat, home.lon)
         return {"ok": True, "home": {"lat": home.lat, "lon": home.lon}, "persisted": persisted}
+
+    def _config_snapshot() -> dict:
+        return {
+            "home": {"lat": config.home.lat, "lon": config.home.lon},
+            "max_distance_km": config.filter.max_distance_km,
+            "alert_distance_km": config.filter.alert_distance_km,
+            "cluster_eps_km": config.analysis.cluster_eps_km,
+            "cluster_min_samples": config.analysis.cluster_min_samples,
+            "cell_window_minutes": config.analysis.cell_window_minutes,
+            "source_type": config.source.type,
+        }
+
+    @app.get("/api/config")
+    async def get_config() -> dict:
+        return _config_snapshot()
+
+    @app.post("/api/config")
+    async def set_config(cfg_in: ConfigIn) -> dict:
+        """Applique des paramètres à chaud (worker + analyse lisent la config en direct)
+        et les persiste dans config.toml."""
+        sv: dict[str, dict[str, object]] = {}
+        if cfg_in.home_lat is not None or cfg_in.home_lon is not None:
+            lat = cfg_in.home_lat if cfg_in.home_lat is not None else config.home.lat
+            lon = cfg_in.home_lon if cfg_in.home_lon is not None else config.home.lon
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise HTTPException(status_code=400, detail="Coordonnées hors limites")
+            config.home.lat, config.home.lon = lat, lon
+            sv["home"] = {"lat": lat, "lon": lon}
+        if cfg_in.max_distance_km is not None:
+            config.filter.max_distance_km = cfg_in.max_distance_km
+            sv.setdefault("filter", {})["max_distance_km"] = cfg_in.max_distance_km
+        if cfg_in.alert_distance_km is not None:
+            config.filter.alert_distance_km = cfg_in.alert_distance_km
+            sv.setdefault("filter", {})["alert_distance_km"] = cfg_in.alert_distance_km
+        if cfg_in.cluster_eps_km is not None:
+            config.analysis.cluster_eps_km = cfg_in.cluster_eps_km
+            sv.setdefault("analysis", {})["cluster_eps_km"] = cfg_in.cluster_eps_km
+        if cfg_in.cluster_min_samples is not None:
+            config.analysis.cluster_min_samples = int(cfg_in.cluster_min_samples)
+            sv.setdefault("analysis", {})["cluster_min_samples"] = int(cfg_in.cluster_min_samples)
+        if cfg_in.cell_window_minutes is not None:
+            config.analysis.cell_window_minutes = int(cfg_in.cell_window_minutes)
+            sv.setdefault("analysis", {})["cell_window_minutes"] = int(cfg_in.cell_window_minutes)
+        # Si le rayon ou HOME change, on borne immédiatement le système à l'anneau :
+        # purge des impacts hors-zone + des cellules dont le centroïde est dehors.
+        if "home" in sv or ("filter" in sv and "max_distance_km" in sv["filter"]):
+            max_d = config.filter.max_distance_km
+            ctx.state.prune_beyond(max_d)
+            with ctx.state.lock:
+                ctx.state.cells = {
+                    cid: c for cid, c in ctx.state.cells.items()
+                    if haversine(config.home.lat, config.home.lon, c.centroid_lat, c.centroid_lon) <= max_d
+                }
+
+        persisted = await run_in_threadpool(update_config, config.source_path, sv) if sv else False
+        return {"ok": True, "persisted": persisted, "config": _config_snapshot()}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

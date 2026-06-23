@@ -34,22 +34,78 @@ function setText(sel, val) {
   }
 }
 
-// ── Overlay de chargement (sondage/sélection des endpoints au démarrage) ─────
-const boot = { done: false, est: 12, phraseTimer: null, pollTimer: null };
-function bootDone() {
+// ── Écran de configuration & lancement (sondage des endpoints + paramètres) ──
+const boot = { done: false, ready: false, est: 12, phraseTimer: null, pollTimer: null };
+
+function bootDismiss() {
   if (boot.done) return;
   boot.done = true;
   clearInterval(boot.phraseTimer);
   clearInterval(boot.pollTimer);
-  const ov = $("#boot-overlay"), bar = $("#boot-bar"), ph = $("#boot-phrase"), hint = $("#boot-hint");
-  if (bar) { bar.style.transition = "width .4s ease"; bar.style.width = "100%"; }
-  if (ph) ph.textContent = "Flux prêt — bon orage ⚡";
-  if (hint) hint.textContent = "";
-  if (ov) setTimeout(() => { ov.classList.add("done"); setTimeout(() => ov.remove(), 650); }, 320);
+  const ov = $("#boot-overlay");
+  if (ov) { ov.classList.add("done"); setTimeout(() => ov.remove(), 650); }
+  setTimeout(() => { try { mapLive.invalidateSize(); } catch (e) { /* */ } }, 80);
 }
+
+function bootSetReady(s) {
+  if (boot.ready) return;
+  boot.ready = true;
+  clearInterval(boot.phraseTimer);
+  const bar = $("#boot-bar"), ph = $("#boot-phrase"), st = $("#boot-status"), btn = $("#boot-launch");
+  if (bar) { bar.style.transition = "width .4s ease"; bar.style.width = "100%"; }
+  if (ph) ph.textContent = "Flux prêt — vérifiez vos paramètres puis lancez";
+  if (st) {
+    st.classList.add("ready");
+    st.textContent = `Connecté · ${s.source ?? "?"}` + (s.latency_s != null ? ` · ⏱ ${s.latency_s} s` : "");
+  }
+  if (btn) btn.classList.add("ready");
+}
+
+function applyConfigToMap(cfg) {
+  if (!cfg) return;
+  state.config = Object.assign(state.config || {}, {
+    home: cfg.home, max_distance_km: cfg.max_distance_km, alert_distance_km: cfg.alert_distance_km,
+  });
+  if (cfg.home && state.homeMarker) state.homeMarker.setLatLng([cfg.home.lat, cfg.home.lon]);
+  if (state.radiusCircle) {
+    if (cfg.home) state.radiusCircle.setLatLng([cfg.home.lat, cfg.home.lon]);
+    if (cfg.max_distance_km) state.radiusCircle.setRadius(cfg.max_distance_km * 1000);
+    try { mapLive.fitBounds(state.radiusCircle.getBounds(), { padding: [24, 24] }); } catch (e) { /* */ }
+  } else if (cfg.home) {
+    mapLive.setView([cfg.home.lat, cfg.home.lon], mapLive.getZoom());
+  }
+  // Recharge la fenêtre d'impacts, désormais bornée à l'anneau côté serveur.
+  fetch(`/api/strikes/live?since=${Math.floor(Date.now() / 1000 - 1800)}`)
+    .then((r) => r.json()).then((j) => addStrikesBatch(j.strikes || [])).catch(() => { /* */ });
+}
+
+async function bootLaunch() {
+  const num = (id) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : null; };
+  const body = {
+    home_lat: num("#cfg-lat"), home_lon: num("#cfg-lon"),
+    max_distance_km: num("#cfg-maxdist"), alert_distance_km: num("#cfg-alert"),
+    cluster_eps_km: num("#cfg-eps"), cluster_min_samples: num("#cfg-minsamp"),
+    cell_window_minutes: num("#cfg-window"),
+  };
+  try {
+    const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.ok) applyConfigToMap((await r.json()).config);
+  } catch (e) { console.error("config", e); }
+  bootDismiss();
+}
+
 function bootInit() {
   const ov = $("#boot-overlay");
   if (!ov) return;
+  // Préremplir le formulaire avec la config courante.
+  fetch("/api/config").then((r) => r.json()).then((c) => {
+    const set = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
+    set("#cfg-lat", c.home && c.home.lat); set("#cfg-lon", c.home && c.home.lon);
+    set("#cfg-maxdist", c.max_distance_km); set("#cfg-alert", c.alert_distance_km);
+    set("#cfg-eps", c.cluster_eps_km); set("#cfg-minsamp", c.cluster_min_samples);
+    set("#cfg-window", c.cell_window_minutes);
+  }).catch(() => {});
+
   const phrases = [
     "Connexion au réseau Blitzortung…",
     "Mesure de la latence des serveurs…",
@@ -79,14 +135,16 @@ function bootInit() {
   };
   fetch("/api/stats").then((r) => r.json()).then((s) => {
     if (s.probe_est_s) boot.est = Math.max(2, s.probe_est_s);
-    if (s.source) { bootDone(); return; }   // déjà connecté (ex. source mqtt rapide)
-    startBar();
+    if (s.source) bootSetReady(s); else startBar();
   }).catch(startBar);
 
+  // Sonde la disponibilité du flux (sans fermer l'overlay — l'utilisateur lance).
   boot.pollTimer = setInterval(async () => {
-    try { const s = await fetch("/api/stats").then((r) => r.json()); if (s.source) bootDone(); } catch { /* */ }
-  }, 600);
-  setTimeout(bootDone, 35000);   // garde-fou : ne jamais bloquer l'utilisateur
+    try { const s = await fetch("/api/stats").then((r) => r.json()); if (s.source) bootSetReady(s); } catch { /* */ }
+  }, 800);
+
+  const btn = $("#boot-launch");
+  if (btn) btn.addEventListener("click", bootLaunch);
 }
 bootInit();
 
@@ -544,8 +602,6 @@ function updateStats(s) {
     dot.className = "dot dot-red";
     text.textContent = s.mqtt_connected ? "en attente" : "hors-ligne";
   }
-
-  if (s.source) bootDone();   // flux connecté → retire l'overlay de chargement
 }
 
 function updateRate() {

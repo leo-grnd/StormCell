@@ -418,7 +418,7 @@ aside.sidebar {
   background: radial-gradient(600px 300px at 50% 38%, rgba(90,162,255,.08), transparent 70%);
 }
 #boot-overlay.done { opacity: 0; pointer-events: none; }
-.boot-card { position: relative; z-index: 1; width: min(440px, 86vw); text-align: center; padding: 0 24px; }
+.boot-card { position: relative; z-index: 1; width: min(560px, 92vw); max-height: 92vh; overflow: auto; text-align: center; padding: 8px 28px; }
 .boot-mark {
   width: 62px; height: 62px; margin: 0 auto 20px; border-radius: 16px;
   display: grid; place-items: center; color: var(--brand-hi);
@@ -444,4 +444,12 @@ aside.sidebar {
   background: linear-gradient(90deg, var(--brand-dim), var(--brand), var(--brand-hi));
   box-shadow: 0 0 12px var(--brand-glow);
 }
-.boot-hint { margin-top: 10px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); }
+.boot-status { margin-top: 9px; font-size: 11px; font-family: var(--mono); color: var(--text-faint); min-height: 15px; }
+.boot-status.ready { color: var(--sev0); }
+
+.boot-params { margin-top: 22px; text-align: left; border-top: 1px solid var(--line); padding-top: 18px; }
+.boot-params-title { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); font-weight: 600; margin-bottom: 13px; }
+.boot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 14px; }
+.boot-grid .field input { width: 100%; }
+.boot-launch { width: 100%; margin-top: 20px; padding: 11px; font-size: 14px; font-weight: 600; }
+.boot-launch.ready { box-shadow: 0 0 0 1px var(--brand), 0 0 24px -6px var(--brand-glow); }

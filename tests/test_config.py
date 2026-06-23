@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from blitz.config import load_config, update_home  # noqa: E402
+from blitz.config import load_config, update_config, update_home  # noqa: E402
 
 
 class LoadConfigTests(unittest.TestCase):
@@ -51,6 +51,32 @@ class UpdateHomeTests(unittest.TestCase):
 
     def test_missing_file_returns_false(self):
         self.assertFalse(update_home(None, 1.0, 2.0))
+
+
+class UpdateConfigTests(unittest.TestCase):
+    def test_multi_section_update_and_add(self):
+        p = Path(tempfile.gettempdir()) / f"sc_cfg3_{os.getpid()}.toml"
+        p.write_text(
+            "[home]\nlat = 1.0   # Mondragon\nlon = 2.0\n\n"
+            "[filter]\nmax_distance_km = 100\n\n[web]\nport = 8000\n",
+            encoding="utf-8",
+        )
+        try:
+            ok = update_config(p, {
+                "home": {"lat": 48.85, "lon": 2.35},
+                "filter": {"max_distance_km": 150, "alert_distance_km": 12},   # alert_distance_km absent → ajouté
+                "analysis": {"cluster_eps_km": 9},                              # section absente → créée
+            })
+            self.assertTrue(ok)
+            c = load_config(p)
+            self.assertAlmostEqual(c.home.lat, 48.85)
+            self.assertEqual(c.filter.max_distance_km, 150)
+            self.assertEqual(c.filter.alert_distance_km, 12)     # clé ajoutée dans [filter]
+            self.assertEqual(c.analysis.cluster_eps_km, 9)       # nouvelle section
+            self.assertEqual(c.web.port, 8000)                   # intact
+            self.assertIn("# Mondragon", p.read_text(encoding="utf-8"))  # commentaire conservé
+        finally:
+            p.unlink()
 
 
 if __name__ == "__main__":

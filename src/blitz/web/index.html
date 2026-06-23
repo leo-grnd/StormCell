@@ -20,7 +20,22 @@
     <div class="boot-title">StormCell <span>NOWCAST</span></div>
     <div class="boot-phrase" id="boot-phrase">Connexion au réseau Blitzortung…</div>
     <div class="boot-track"><div class="boot-bar" id="boot-bar"></div></div>
-    <div class="boot-hint" id="boot-hint">Sélection du serveur le plus rapide</div>
+    <div class="boot-status" id="boot-status">Sélection du serveur le plus rapide…</div>
+
+    <div class="boot-params">
+      <div class="boot-params-title">Paramètres de surveillance</div>
+      <div class="boot-grid">
+        <div class="field"><label>Latitude</label><input type="number" id="cfg-lat" step="0.0001"></div>
+        <div class="field"><label>Longitude</label><input type="number" id="cfg-lon" step="0.0001"></div>
+        <div class="field"><label>Rayon surveillance (km)</label><input type="number" id="cfg-maxdist" min="1" step="5"></div>
+        <div class="field"><label>Anneau d'alerte (km)</label><input type="number" id="cfg-alert" min="1" step="1"></div>
+        <div class="field"><label>Rayon de cluster (km)</label><input type="number" id="cfg-eps" min="1" step="1"></div>
+        <div class="field"><label>Min. impacts / cellule</label><input type="number" id="cfg-minsamp" min="2" step="1"></div>
+        <div class="field"><label>Fenêtre de suivi (min)</label><input type="number" id="cfg-window" min="1" step="1"></div>
+      </div>
+    </div>
+
+    <button class="btn boot-launch" id="boot-launch">Lancer ⚡</button>
   </div>
 </div>
 

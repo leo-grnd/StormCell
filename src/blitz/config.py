@@ -150,11 +150,22 @@ def load_config(path: Path | str | None = None) -> Config:
     return cfg
 
 
-def update_home(path: Path | str | None, lat: float, lon: float) -> bool:
-    """Réécrit lat/lon de la section [home] d'un config.toml, en préservant le reste.
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return f"{v:g}"
+    return f'"{v}"'
 
-    Best-effort : renvoie False si le fichier est introuvable/illisible (la mise à
-    jour en mémoire reste effective, seule la persistance échoue).
+
+def update_config(path: Path | str | None, section_values: dict[str, dict[str, object]]) -> bool:
+    """Met à jour des clés de plusieurs sections d'un config.toml, en préservant le reste.
+
+    `section_values` ex. : {"home": {"lat": 44.2, "lon": 4.7}, "filter": {"max_distance_km": 150}}.
+    Best-effort : renvoie False si le fichier est introuvable/illisible (la mise à jour
+    en mémoire reste effective, seule la persistance échoue).
     """
     if path is None:
         return False
@@ -164,48 +175,48 @@ def update_home(path: Path | str | None, lat: float, lon: float) -> bool:
     except OSError:
         return False
 
-    def _set_value(line: str, value: float) -> str:
-        # Remplace la valeur après '=' en gardant un éventuel commentaire de fin.
-        return re.sub(r"(=\s*)[^#]*", rf"\g<1>{value}  ", line, count=1)
-
+    remaining = {sec: dict(kv) for sec, kv in section_values.items()}
     out: list[str] = []
-    in_home = False
-    done_lat = done_lon = False
-    has_home = any(ln.strip() == "[home]" for ln in lines)
+    cur: str | None = None
+
+    def flush(section: str | None) -> None:
+        if section in remaining and remaining[section]:
+            for k, v in remaining[section].items():
+                out.append(f"{k} = {_toml_value(v)}")
+            remaining[section] = {}
 
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            if in_home:  # on quitte [home] : compléter les clés manquantes
-                if not done_lat:
-                    out.append(f"lat = {lat}")
-                    done_lat = True
-                if not done_lon:
-                    out.append(f"lon = {lon}")
-                    done_lon = True
-            in_home = stripped == "[home]"
+            flush(cur)                       # compléter les clés manquantes de la section quittée
+            cur = stripped[1:-1]
             out.append(line)
             continue
-        if in_home and re.match(r"\s*lat\s*=", line):
-            out.append(_set_value(line, lat))
-            done_lat = True
-            continue
-        if in_home and re.match(r"\s*lon\s*=", line):
-            out.append(_set_value(line, lon))
-            done_lon = True
-            continue
+        if cur in remaining and remaining[cur]:
+            m = re.match(r"(\s*)([A-Za-z0-9_]+)(\s*=\s*)", line)
+            if m and m.group(2) in remaining[cur]:
+                key = m.group(2)
+                value = remaining[cur].pop(key)
+                hash_idx = line.find("#")
+                comment = ("  " + line[hash_idx:]) if hash_idx != -1 else ""
+                out.append(f"{m.group(1)}{key} = {_toml_value(value)}{comment}")
+                continue
         out.append(line)
 
-    if in_home:
-        if not done_lat:
-            out.append(f"lat = {lat}")
-        if not done_lon:
-            out.append(f"lon = {lon}")
-    if not has_home:
-        out = ["[home]", f"lat = {lat}", f"lon = {lon}", ""] + out
+    flush(cur)                               # dernière section du fichier
+    for sec, kv in remaining.items():        # sections totalement absentes
+        if kv:
+            out.append(f"[{sec}]")
+            for k, v in kv.items():
+                out.append(f"{k} = {_toml_value(v)}")
 
     try:
         p.write_text("\n".join(out) + "\n", encoding="utf-8")
     except OSError:
         return False
     return True
+
+
+def update_home(path: Path | str | None, lat: float, lon: float) -> bool:
+    """Réécrit lat/lon de la section [home] (compat — délègue à update_config)."""
+    return update_config(path, {"home": {"lat": lat, "lon": lon}})

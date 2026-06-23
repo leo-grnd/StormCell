@@ -3,13 +3,13 @@
 # les défauts définis dans src/blitz/config.py.
 
 [home]
-lat = 44.243318          # Mondragon
-lon = 4.716102
+lat = 39.9007  # Mondragon
+lon = -75.1676
 
 [filter]
-max_distance_km = 10000
+max_distance_km = 150
 max_strikes_shown = 15   # ligne(s) du TUI legacy
-alert_distance_km = 15   # alerte sonore frontend si impact sous ce seuil
+alert_distance_km = 15  # alerte sonore frontend si impact sous ce seuil
 
 [source]
 # "blitzortung_ws" : flux WebSocket direct (latence ≈ quelques secondes) — recommandé
@@ -34,9 +34,9 @@ host = "127.0.0.1"
 port = 8000
 
 [analysis]
-cluster_eps_km = 12          # rayon DBSCAN (haversine, cohérent partout)
+cluster_eps_km = 12  # rayon DBSCAN (haversine, cohérent partout)
 cluster_min_samples = 4
-cell_window_minutes = 30     # fenêtre glissante pour le tracking
+cell_window_minutes = 30  # fenêtre glissante pour le tracking
 tick_seconds = 7             # cadence du recalcul des cellules
 min_mds_quality = 0          # impacts ignorés si mds < cette valeur (0 = pas de filtre)
 max_track_misses = 2         # une cellule survit N ticks "creux" avant disparition
