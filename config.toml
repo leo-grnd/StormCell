@@ -3,13 +3,13 @@
 # les défauts définis dans src/blitz/config.py.
 
 [home]
-lat = 39.9007  # Mondragon
-lon = -75.1676
+lat = 44.243318  # Mondragon
+lon = 4.716102
 
 [filter]
 max_distance_km = 150
 max_strikes_shown = 15   # ligne(s) du TUI legacy
-alert_distance_km = 15  # alerte sonore frontend si impact sous ce seuil
+alert_distance_km = 15.0  # alerte sonore frontend si impact sous ce seuil
 
 [source]
 # "blitzortung_ws" : flux WebSocket direct (latence ≈ quelques secondes) — recommandé
@@ -28,28 +28,42 @@ keepalive_s = 60
 
 [db]
 path = "lightning_log.db"
+retention_days = 0             # 0 = conservation illimitée ; sinon purge des données plus vieilles
+maintenance_interval_min = 60  # cadence de la maintenance (purge + checkpoint WAL)
+vacuum_on_maintenance = false  # VACUUM après purge (récupère l'espace disque ; bloquant)
 
 [web]
 host = "127.0.0.1"
 port = 8000
 
 [analysis]
-cluster_eps_km = 12  # rayon DBSCAN (haversine, cohérent partout)
+cluster_eps_km = 12.0  # rayon DBSCAN (haversine, cohérent partout)
 cluster_min_samples = 4
+cluster_algo = "dbscan"      # "dbscan" | "hdbscan" (densité variable, sépare mieux les lignes d'orage)
+hdbscan_min_cluster_size = 8 # taille mini d'une cellule en mode hdbscan
 cell_window_minutes = 30  # fenêtre glissante pour le tracking
-tick_seconds = 7             # cadence du recalcul des cellules
-min_mds_quality = 0          # impacts ignorés si mds < cette valeur (0 = pas de filtre)
+tick_seconds = 7  # cadence du recalcul des cellules
+min_mds_quality = 0  # impacts ignorés si mds < cette valeur (0 = pas de filtre)
 max_track_misses = 2         # une cellule survit N ticks "creux" avant disparition
 eta_max_radius_km = 500      # ETA HOME calculée seulement pour cellules sous ce rayon
 max_strikes_for_clustering = 20000  # sous-échantillonnage si dépassé
+micro_grid_km = 1.5          # pré-agrégation grille avant DBSCAN sous gros orage (0 = off)
+micro_cluster_min_points = 1500  # seuil d'activation de la pré-agrégation
 motion_history_seconds = 900 # fenêtre de régression vitesse (15 min)
 recent_buffer = 50000        # impacts gardés en RAM (doit couvrir la fenêtre même en gros orage)
 # Vague 2 : suivi Kalman + nowcast
 kf_meas_noise_km = 2.5       # bruit de mesure du centroïde (km)
 kf_process_accel = 0.00002   # bruit de process (accélération, km/s²)
 jump_window_min = 2.0        # fenêtre du taux d'éclairs instantané (lightning jump)
-strike_ring_km = 15.0        # anneau « foudre arrivée » pour l'ETA au bord de cellule
+strike_ring_km = 15.0  # anneau « foudre arrivée » pour l'ETA au bord de cellule
 nowcast_horizon_min = 30.0   # horizon de la proba de coup sur HOME
+# Vague 5 : regroupement strokes→flashs + lightning jump canonique (2σ)
+flash_dt_s = 0.5             # écart temporel max pour regrouper des strokes en un flash
+flash_dd_km = 10.0          # écart spatial max pour regrouper des strokes en un flash
+jump_min_flash_rate = 10.0  # plancher (flashs/min) pour qu'un jump compte
+jump_dfrdt_lookback_s = 120 # fenêtre de la dérivée du taux (DFRDT, ≈ 2 min)
+jump_sigma_window_s = 720   # fenêtre d'estimation de σ du bruit (≈ 12 min)
+jump_sigma_mult = 2.0       # seuil en σ (canonique = 2)
 
 [predict]
 min_probability = 0.3       # proba minimale pour journaliser une prédiction (vérification)

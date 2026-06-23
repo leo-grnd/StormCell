@@ -29,10 +29,28 @@
         <div class="field"><label>Longitude</label><input type="number" id="cfg-lon" step="0.0001"></div>
         <div class="field"><label>Rayon surveillance (km)</label><input type="number" id="cfg-maxdist" min="1" step="5"></div>
         <div class="field"><label>Anneau d'alerte (km)</label><input type="number" id="cfg-alert" min="1" step="1"></div>
+        <div class="field"><label>Anneau foudre (km)</label><input type="number" id="cfg-ring" min="1" step="1"></div>
         <div class="field"><label>Rayon de cluster (km)</label><input type="number" id="cfg-eps" min="1" step="1"></div>
         <div class="field"><label>Min. impacts / cellule</label><input type="number" id="cfg-minsamp" min="2" step="1"></div>
+        <div class="field"><label>Filtre qualité (MDS min)</label><input type="number" id="cfg-minmds" min="0" step="1"></div>
         <div class="field"><label>Fenêtre de suivi (min)</label><input type="number" id="cfg-window" min="1" step="1"></div>
+        <div class="field"><label>Cadence d'analyse (s)</label><input type="number" id="cfg-tick" min="1" step="1"></div>
       </div>
+    </div>
+
+    <div class="boot-params">
+      <div class="boot-params-title">Règles d'alerte</div>
+      <div class="boot-rules">
+        <label class="boot-check"><input type="checkbox" id="rule-sound"> Son + notification quand la foudre entre dans l'anneau</label>
+        <label class="boot-check"><input type="checkbox" id="rule-jump"> Notification sur orage sévère (lightning jump)</label>
+        <label class="boot-check"><input type="checkbox" id="rule-approach"> Notification sur cellule en approche, ETA &lt;
+          <input type="number" id="rule-eta" min="1" max="120" step="1" class="boot-eta"> min</label>
+      </div>
+    </div>
+
+    <div class="boot-srv">
+      <button class="btn ghost" id="boot-probe" type="button">Tester les serveurs</button>
+      <span class="boot-srv-res mono" id="boot-srv-res"></span>
     </div>
 
     <button class="btn boot-launch" id="boot-launch">Lancer ⚡</button>
@@ -156,6 +174,17 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- système / débit -->
+    <div class="side-sec">
+      <div class="side-head"><h2>Système</h2><span class="count mono" id="sys-calc" title="Durée du dernier recalcul des cellules">—</span></div>
+      <div class="sys-grid mono">
+        <span title="Débit mondial instantané">🌍 <b id="sys-wps">—</b>/s</span>
+        <span title="Débit dans la zone (impacts/min)">📍 <b id="sys-npm">—</b>/min</span>
+        <span title="Remplissage du tampon mémoire des impacts récents">🧠 <b id="sys-buf">—</b></span>
+        <span title="File de diffusion (occupée / max) · impacts perdus">📨 <b id="sys-queue">—</b></span>
       </div>
     </div>
 

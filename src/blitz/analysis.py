@@ -21,10 +21,12 @@ import logging
 import math
 import random
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 from sklearn.cluster import DBSCAN
 
 from .config import AnalysisConfig, HomeConfig
@@ -67,27 +69,109 @@ def _subsample(strikes: list[Strike], cap: int) -> list[Strike]:
     return rng.sample(strikes, cap)
 
 
+def _count_flashes(strikes: list[Strike], dt_s: float, dd_km: float) -> int:
+    """Regroupe des *strokes* en *flashs* (proches en temps ET en espace).
+
+    Blitzortung émet des strokes ; un éclair (flash) en compte souvent plusieurs.
+    Le taux d'éclairs/min (base du lightning jump) doit se calculer en flashs.
+    """
+    flashes: list[tuple[float, float, float]] = []  # représentant (t, lat, lon)
+    for s in sorted(strikes, key=lambda x: x.ts_unix):
+        joined = False
+        for i, (ft, flat, flon) in enumerate(flashes):
+            if s.ts_unix - ft <= dt_s and haversine(flat, flon, s.lat, s.lon) <= dd_km:
+                flashes[i] = (s.ts_unix, s.lat, s.lon)
+                joined = True
+                break
+        if not joined:
+            flashes.append((s.ts_unix, s.lat, s.lon))
+    return len(flashes)
+
+
 # ─── DBSCAN haversine ───────────────────────────────────────────────────────
-def _detect_clusters(strikes: list[Strike], cfg: AnalysisConfig) -> list[_RawCluster]:
-    """DBSCAN en métrique haversine native, valide partout sur le globe."""
-    if len(strikes) < cfg.cluster_min_samples:
-        return []
+def _groups_from_labels(strikes: list[Strike], labels) -> list[list[Strike]]:
+    """Regroupe les impacts par label DBSCAN/HDBSCAN (le bruit -1 est ignoré)."""
+    groups: dict[int, list[Strike]] = defaultdict(list)
+    for i, lbl in enumerate(labels):
+        if lbl != -1:
+            groups[int(lbl)].append(strikes[i])
+    return list(groups.values())
+
+
+def _label_per_strike(strikes: list[Strike], cfg: AnalysisConfig) -> list[list[Strike]]:
+    """Clustering classique : un point par impact (chemin par défaut, exact)."""
     coords_rad = np.asarray([(math.radians(s.lat), math.radians(s.lon)) for s in strikes], dtype=float)
+    if cfg.cluster_algo == "hdbscan":
+        # HDBSCAN : densité variable → sépare mieux cellules d'une même ligne d'orage.
+        from sklearn.cluster import HDBSCAN
+        labels = HDBSCAN(
+            min_cluster_size=max(2, cfg.hdbscan_min_cluster_size),
+            metric="haversine",
+            copy=True,
+        ).fit_predict(coords_rad)
+    else:
+        eps_rad = cfg.cluster_eps_km / EARTH_RADIUS_KM
+        labels = DBSCAN(
+            eps=eps_rad, min_samples=cfg.cluster_min_samples,
+            metric="haversine", algorithm="ball_tree",
+        ).fit_predict(coords_rad)
+    return _groups_from_labels(strikes, labels)
+
+
+def _label_grid_aggregated(strikes: list[Strike], cfg: AnalysisConfig) -> list[list[Strike]]:
+    """Pré-agrégation grille puis DBSCAN *pondéré* sur les représentants (Lot D #18).
+
+    On regroupe d'abord les strokes dans des cellules de grille fines (≪ eps), puis
+    on clusterise un représentant par cellule en passant le nombre de strokes en
+    `sample_weight`. Comme la somme des poids dans un voisinage eps reproduit le
+    nombre de strokes sous-jacents, la détermination des points-cœur (et donc des
+    clusters) est équivalente au DBSCAN par-impact, mais sur bien moins de points.
+    """
+    dstep = cfg.micro_grid_km / 111.0  # pas de grille en degrés (≈ micro_grid_km)
+    bins: dict[tuple[int, int], list[Strike]] = defaultdict(list)
+    for s in strikes:
+        bins[(round(s.lat / dstep), round(s.lon / dstep))].append(s)
+
+    cells = list(bins.values())
+    reps = np.empty((len(cells), 2), dtype=float)
+    weights = np.empty(len(cells), dtype=float)
+    for i, members in enumerate(cells):
+        reps[i, 0] = math.radians(sum(s.lat for s in members) / len(members))
+        reps[i, 1] = math.radians(sum(s.lon for s in members) / len(members))
+        weights[i] = len(members)
+
     eps_rad = cfg.cluster_eps_km / EARTH_RADIUS_KM
     labels = DBSCAN(
-        eps=eps_rad,
-        min_samples=cfg.cluster_min_samples,
-        metric="haversine",
-        algorithm="ball_tree",
-    ).fit_predict(coords_rad)
+        eps=eps_rad, min_samples=cfg.cluster_min_samples,
+        metric="haversine", algorithm="ball_tree",
+    ).fit_predict(reps, sample_weight=weights)
+
+    groups: dict[int, list[Strike]] = defaultdict(list)
+    for cell_idx, lbl in enumerate(labels):
+        if lbl != -1:
+            groups[int(lbl)].extend(cells[cell_idx])
+    return list(groups.values())
+
+
+def _detect_clusters(strikes: list[Strike], cfg: AnalysisConfig) -> list[_RawCluster]:
+    """DBSCAN en métrique haversine native, valide partout sur le globe.
+
+    Sous forte charge (≥ `micro_cluster_min_points`), une pré-agrégation grille
+    réduit le nombre de points fournis à DBSCAN (cf. `_label_grid_aggregated`).
+    """
+    if len(strikes) < cfg.cluster_min_samples:
+        return []
+
+    if (cfg.cluster_algo != "hdbscan"
+            and cfg.micro_grid_km > 0
+            and len(strikes) >= cfg.micro_cluster_min_points):
+        member_groups = _label_grid_aggregated(strikes, cfg)
+    else:
+        member_groups = _label_per_strike(strikes, cfg)
 
     jump_window_s = cfg.jump_window_min * 60.0
     clusters: list[_RawCluster] = []
-    for lbl in sorted(set(labels)):
-        if lbl == -1:
-            continue
-        mask = labels == lbl
-        members = [strikes[i] for i, m in enumerate(mask) if m]
+    for members in member_groups:
         # Centroïde en moyenne pondérée des coords sphériques (xyz) puis reprojection,
         # plus robuste qu'une moyenne arithmétique des lat/lon (qui faute au méridien).
         lats = np.asarray([math.radians(s.lat) for s in members])
@@ -103,9 +187,10 @@ def _detect_clusters(strikes: list[Strike], cfg: AnalysisConfig) -> list[_RawClu
         first = min(s.ts_unix for s in members)
         last = max(s.ts_unix for s in members)
         duration_min = max((last - first) / 60.0, 1 / 60.0)
-        # Taux d'éclairs instantané : impacts dans la fenêtre courte (vs moyenne sur la vie).
-        recent = sum(1 for s in members if s.ts_unix >= last - jump_window_s)
-        flash_rate = recent / max(cfg.jump_window_min, _EPS)
+        # Taux d'éclairs instantané : flashs (strokes regroupés) dans la fenêtre courte.
+        recent = [s for s in members if s.ts_unix >= last - jump_window_s]
+        n_flashes = _count_flashes(recent, cfg.flash_dt_s, cfg.flash_dd_km)
+        flash_rate = n_flashes / max(cfg.jump_window_min, _EPS)
         clusters.append(
             _RawCluster(
                 centroid_lat=c_lat,
@@ -122,23 +207,33 @@ def _detect_clusters(strikes: list[Strike], cfg: AnalysisConfig) -> list[_RawClu
 
 
 # ─── Association inter-tick ─────────────────────────────────────────────────
-def _match_previous(
-    raw: _RawCluster,
-    previous: dict[int, Cell],
-    max_jump_km: float,
-    used: set[int],
-) -> int | None:
-    """Greedy nearest-neighbor sur distance haversine. Un id ne peut être réutilisé qu'une fois."""
-    best_id: int | None = None
-    best_d = max_jump_km
-    for cid, cell in previous.items():
-        if cid in used:
-            continue
-        d = haversine(raw.centroid_lat, raw.centroid_lon, cell.centroid_lat, cell.centroid_lon)
-        if d < best_d:
-            best_d = d
-            best_id = cid
-    return best_id
+def _associate(raws: list[_RawCluster], previous: dict[int, Cell], cfg: AnalysisConfig) -> dict[int, int]:
+    """Association *optimale* clusters ↔ cellules (algorithme hongrois) avec gating
+    adaptatif : la tolérance de saut croît avec la vitesse de la cellule (cellules
+    rapides → on autorise un déplacement plus grand). Renvoie {index_cluster: prev_id}.
+
+    Le coût global minimisé évite les inversions d'identifiants du greedy nearest-neighbor
+    quand plusieurs cellules sont proches (recommandation SCIT).
+    """
+    prev_items = list(previous.items())
+    if not raws or not prev_items:
+        return {}
+    base_gate = 2.0 * cfg.cluster_eps_km
+    big = 1e7
+    cost = np.full((len(raws), len(prev_items)), big, dtype=float)
+    for i, raw in enumerate(raws):
+        for j, (_pid, cell) in enumerate(prev_items):
+            d = haversine(raw.centroid_lat, raw.centroid_lon, cell.centroid_lat, cell.centroid_lon)
+            dt = max(raw.last_seen - cell.last_seen, 0.0)
+            reach = (cell.velocity_kmh or 0.0) / 3600.0 * dt   # déplacement plausible sur dt
+            if d <= base_gate + reach:
+                cost[i, j] = d
+    rows, cols = linear_sum_assignment(cost)
+    out: dict[int, int] = {}
+    for i, j in zip(rows, cols, strict=True):
+        if cost[i, j] < big:
+            out[int(i)] = prev_items[j][0]
+    return out
 
 
 # ─── Tendances simples ──────────────────────────────────────────────────────
@@ -343,13 +438,13 @@ def update_cells(
 
     raw_clusters = _detect_clusters(pool, cfg)
 
+    assignment = _associate(raw_clusters, previous, cfg)   # index cluster → prev_id (optimal)
+    used: set[int] = set(assignment.values())
     new_cells: dict[int, Cell] = {}
-    used: set[int] = set()
-    max_jump = 2.0 * cfg.cluster_eps_km
 
-    for raw in raw_clusters:
-        prev_id = _match_previous(raw, previous, max_jump, used)
-        prev_cell: Cell | None = None
+    for idx, raw in enumerate(raw_clusters):
+        prev_id = assignment.get(idx)
+        prev_cell: Cell | None = previous.get(prev_id) if prev_id is not None else None
         if prev_id is None:
             cid = next_id
             next_id += 1
@@ -357,9 +452,7 @@ def update_cells(
             r_hist: list[tuple[float, float]] = []
             i_hist: list[tuple[float, float]] = []
         else:
-            used.add(prev_id)
             cid = prev_id
-            prev_cell = previous[prev_id]
             track = list(prev_cell.track)
             r_hist = list(prev_cell.radius_history)
             i_hist = list(prev_cell.intensity_history)
@@ -393,7 +486,13 @@ def update_cells(
         _apply_kalman(cell, prev_cell, home, cfg)
         cell.intensity_trend = _trend(i_hist)
         cell.radius_trend = _trend(r_hist)
-        cell.jump_detected, _ = lightning_jump(i_hist)
+        cell.jump_detected, _ = lightning_jump(
+            i_hist,
+            sigma_mult=cfg.jump_sigma_mult,
+            min_rate=cfg.jump_min_flash_rate,
+            lookback_s=cfg.jump_dfrdt_lookback_s,
+            sigma_window_s=cfg.jump_sigma_window_s,
+        )
         cell.severity = severity_index(
             cell.flash_rate_per_min, cell.radius_km, cell.strikes_count,
             cell.intensity_trend, cell.jump_detected,

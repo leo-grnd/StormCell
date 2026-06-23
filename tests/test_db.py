@@ -106,5 +106,47 @@ class CellPersistenceTests(_DbCase):
         self.assertEqual(ps[0]["eta_strike_min"], 12.0)
 
 
+# ── Lot D #19 : historique décimé ────────────────────────────────────────────
+class DecimationTests(_DbCase):
+    def test_count_range_and_decimation(self):
+        now = time.time()
+        # 40 impacts répartis sur 4 mailles distinctes (10 par maille).
+        for cell, (dlat, dlon) in enumerate([(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)]):
+            for i in range(10):
+                self.db.insert_strike(
+                    ts_unix=now - i, lat=44.0 + dlat + i * 1e-4, lon=4.0 + dlon,
+                    distance_km=5.0 + cell, bearing_deg=0, mds=6, home_lat=44.0, home_lon=4.0,
+                )
+        self.assertEqual(self.db.count_range(), 40)
+        agg = self.db.query_range_decimated(0.1)   # maille ≈ 11 km → 4 amas
+        self.assertEqual(len(agg), 4)
+        self.assertEqual(sum(r["n"] for r in agg), 40)   # aucun impact perdu
+        self.assertTrue(all("distance_km" in r for r in agg))
+
+
+# ── Lot D #20 : rétention / index / maintenance ──────────────────────────────
+class MaintenanceTests(_DbCase):
+    def test_composite_index_present(self):
+        rows = self.db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_strikes_ts_dist'"
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+
+    def test_purge_older_than(self):
+        now = time.time()
+        self._add(5, base_ts=now)              # récents (now, now-60, …)
+        self._add(5, base_ts=now - 40 * 86400)  # vieux de ~40 jours
+        self.assertEqual(self.db.count(), 10)
+        deleted = self.db.purge_older_than(now - 10 * 86400)
+        self.assertEqual(deleted, 5)
+        self.assertEqual(self.db.count(), 5)
+
+    def test_maintain_checkpoints(self):
+        self._add(3)
+        res = self.db.maintain()
+        self.assertTrue(res["checkpointed"])
+        self.assertEqual(res["deleted"], 0)   # retention_days=0 → aucune purge
+
+
 if __name__ == "__main__":
     unittest.main()

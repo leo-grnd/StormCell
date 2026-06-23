@@ -10,11 +10,22 @@ const state = {
   cellLayer: null,
   homeMarker: null,
   radiusCircle: null,
+  alertCircle: null,
   cells: new Map(),
   uptimeStart: Date.now(),
   alertEnabled: localStorage.getItem("alert-sound") === "1",
   useLocal: localStorage.getItem("tz-local") !== "0",
+  alertRules: null,
 };
+
+// Règles d'alerte (préférences client, persistées dans le navigateur).
+const ALERT_DEFAULTS = { sound: true, jump: true, approach: false, etaMin: 15 };
+function loadAlertRules() {
+  try { return Object.assign({}, ALERT_DEFAULTS, JSON.parse(localStorage.getItem("alert-rules") || "{}")); }
+  catch { return { ...ALERT_DEFAULTS }; }
+}
+function saveAlertRules() { localStorage.setItem("alert-rules", JSON.stringify(state.alertRules)); }
+state.alertRules = loadAlertRules();
 
 // ── Temps : local (défaut) ou UTC ────────────────────────────────────────────
 function fmtClock(unix) {
@@ -67,6 +78,10 @@ function applyConfigToMap(cfg) {
     home: cfg.home, max_distance_km: cfg.max_distance_km, alert_distance_km: cfg.alert_distance_km,
   });
   if (cfg.home && state.homeMarker) state.homeMarker.setLatLng([cfg.home.lat, cfg.home.lon]);
+  if (state.alertCircle) {
+    if (cfg.home) state.alertCircle.setLatLng([cfg.home.lat, cfg.home.lon]);
+    if (cfg.alert_distance_km) state.alertCircle.setRadius(cfg.alert_distance_km * 1000);
+  }
   if (state.radiusCircle) {
     if (cfg.home) state.radiusCircle.setLatLng([cfg.home.lat, cfg.home.lon]);
     if (cfg.max_distance_km) state.radiusCircle.setRadius(cfg.max_distance_km * 1000);
@@ -85,8 +100,16 @@ async function bootLaunch() {
     home_lat: num("#cfg-lat"), home_lon: num("#cfg-lon"),
     max_distance_km: num("#cfg-maxdist"), alert_distance_km: num("#cfg-alert"),
     cluster_eps_km: num("#cfg-eps"), cluster_min_samples: num("#cfg-minsamp"),
-    cell_window_minutes: num("#cfg-window"),
+    cell_window_minutes: num("#cfg-window"), strike_ring_km: num("#cfg-ring"),
+    min_mds_quality: num("#cfg-minmds"), tick_seconds: num("#cfg-tick"),
   };
+  // Règles d'alerte (préférences client).
+  const chk = (id) => !!($(id) && $(id).checked);
+  state.alertRules = {
+    sound: chk("#rule-sound"), jump: chk("#rule-jump"), approach: chk("#rule-approach"),
+    etaMin: Math.max(1, num("#rule-eta") || 15),
+  };
+  saveAlertRules();
   try {
     const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (r.ok) applyConfigToMap((await r.json()).config);
@@ -102,9 +125,30 @@ function bootInit() {
     const set = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
     set("#cfg-lat", c.home && c.home.lat); set("#cfg-lon", c.home && c.home.lon);
     set("#cfg-maxdist", c.max_distance_km); set("#cfg-alert", c.alert_distance_km);
-    set("#cfg-eps", c.cluster_eps_km); set("#cfg-minsamp", c.cluster_min_samples);
-    set("#cfg-window", c.cell_window_minutes);
+    set("#cfg-ring", c.strike_ring_km); set("#cfg-eps", c.cluster_eps_km);
+    set("#cfg-minsamp", c.cluster_min_samples); set("#cfg-minmds", c.min_mds_quality);
+    set("#cfg-window", c.cell_window_minutes); set("#cfg-tick", c.tick_seconds);
   }).catch(() => {});
+
+  // Préremplir les règles d'alerte depuis les préférences sauvegardées.
+  const ar = state.alertRules;
+  if ($("#rule-sound")) $("#rule-sound").checked = ar.sound;
+  if ($("#rule-jump")) $("#rule-jump").checked = ar.jump;
+  if ($("#rule-approach")) $("#rule-approach").checked = ar.approach;
+  if ($("#rule-eta")) $("#rule-eta").value = ar.etaMin;
+
+  // Bouton « Tester les serveurs » : affiche le classement de latence des endpoints.
+  const probeBtn = $("#boot-probe");
+  if (probeBtn) probeBtn.addEventListener("click", async () => {
+    const res = $("#boot-srv-res");
+    if (res) res.textContent = "test en cours…";
+    probeBtn.disabled = true;
+    try {
+      const j = await fetch("/api/source/probe").then((x) => x.json());
+      if (res) res.textContent = (j.endpoints || []).map((e) => `${e.endpoint} ${e.latency_s != null ? e.latency_s + " s" : "—"}`).join("  ·  ") || "aucun";
+    } catch { if (res) res.textContent = "indisponible"; }
+    probeBtn.disabled = false;
+  });
 
   const phrases = [
     "Connexion au réseau Blitzortung…",
@@ -282,6 +326,7 @@ function trendBadge(t) {
 
 const cellRefs = new Map();
 const notifiedJump = new Set();
+const notifiedApproach = new Set();
 
 function selectCell(id) {
   document.querySelectorAll(".cell-card.selected").forEach((el) => el.classList.remove("selected"));
@@ -449,6 +494,21 @@ function renderCells(cells) {
       const projMin = 30;
       const lenKm = (c.velocity_kmh / 60) * projMin;
       const tip = at(projMin);
+
+      // Enveloppe de menace : corridor balayé par le corps de la cellule (rayon),
+      // élargi selon la tendance du rayon, + cercle projeté à T+30.
+      const rkm = Math.max(c.radius_km, 3);
+      const grow = c.radius_trend === "growing" ? 1.4 : (c.radius_trend === "declining" ? 0.8 : 1.0);
+      const perp = rad + Math.PI / 2;
+      const ex = (rkm / 111) * Math.cos(perp), ey = (rkm / (111 * cosLat)) * Math.sin(perp);
+      L.polygon([
+        [c.centroid.lat + ex, c.centroid.lon + ey],
+        [tip[0] + ex * grow, tip[1] + ey * grow],
+        [tip[0] - ex * grow, tip[1] - ey * grow],
+        [c.centroid.lat - ex, c.centroid.lon - ey],
+      ], { color: sevCol, weight: 0, fillColor: sevCol, fillOpacity: 0.08 }).addTo(state.cellLayer);
+      L.circle(tip, { radius: rkm * grow * 1000, color: sevCol, weight: 1, fill: false, dashArray: "3,5", opacity: 0.45 }).addTo(state.cellLayer);
+
       L.polyline([[c.centroid.lat, c.centroid.lon], tip], { color: "#f85149", weight: 2, dashArray: "6,5" }).addTo(state.cellLayer);
       [10, 20, 30].forEach((m) => {
         L.circleMarker(at(m), { radius: 3, color: "#f85149", fillColor: "#0a0d13", fillOpacity: 1, weight: 1.5 })
@@ -464,9 +524,14 @@ function renderCells(cells) {
       }
     }
 
-    if (c.jump_detected && !notifiedJump.has(c.cell_id)) {
+    const rules = state.alertRules;
+    if (c.jump_detected && rules.jump && !notifiedJump.has(c.cell_id)) {
       notifiedJump.add(c.cell_id);
       notify("⚠ Orage sévère", `Cellule #${c.cell_id} : intensification rapide (jump)`);
+    }
+    if (rules.approach && c.eta_strike_minutes != null && c.eta_strike_minutes <= rules.etaMin && !notifiedApproach.has(c.cell_id)) {
+      notifiedApproach.add(c.cell_id);
+      notify("🌩 Cellule en approche", `#${c.cell_id} : foudre dans l'anneau dans ~${Math.round(c.eta_strike_minutes)} min`);
     }
 
     const card = buildCellCard(c, sevCol);
@@ -478,6 +543,7 @@ function renderCells(cells) {
 
   updateThreatBanner(cells);
   for (const id of [...notifiedJump]) if (!cellRefs.has(id)) notifiedJump.delete(id);
+  for (const id of [...notifiedApproach]) if (!cellRefs.has(id)) notifiedApproach.delete(id);
 }
 
 function focusCell(id) {
@@ -547,7 +613,7 @@ function notify(title, body) {
 }
 function maybeAlert(s) {
   if (!state.alertEnabled || !state.config) return;
-  if (s.distance_km <= state.config.alert_distance_km) {
+  if (state.alertRules.sound && s.distance_km <= state.config.alert_distance_km) {
     playBeep();
     notify("⚡ Foudre proche", `${s.distance_km.toFixed(1)} km de chez vous`);
   }
@@ -569,6 +635,9 @@ function updateStats(s) {
       state.radiusCircle = L.circle([s.home.lat, s.home.lon], {
         radius: s.max_distance_km * 1000, color: "#5aa2ff", weight: 1, fillOpacity: 0.02, dashArray: "4,7",
       }).addTo(mapLive);
+      state.alertCircle = L.circle([s.home.lat, s.home.lon], {
+        radius: (s.alert_distance_km || 15) * 1000, color: "#ec8a2c", weight: 1.2, fill: false, dashArray: "2,5",
+      }).addTo(mapLive);
       mapLive.setView([s.home.lat, s.home.lon], 8);
       fetchHomeName(s.home.lat, s.home.lon);
     }
@@ -589,6 +658,26 @@ function updateStats(s) {
     } else {
       lb.textContent = "—"; lb.style.color = "";
     }
+  }
+
+  // Diagnostics système (débit, tampon, file de diffusion, coût du recalcul).
+  if (s.cells_compute_ms != null) setText("#sys-calc", `${s.cells_compute_ms} ms`);
+  setText("#sys-wps", s.world_per_s != null ? s.world_per_s.toFixed(0) : "—");
+  setText("#sys-npm", s.nearby_per_min != null ? s.nearby_per_min.toFixed(0) : "—");
+  if (s.recent_buffer != null && s.recent_buffer_max) {
+    const buf = $("#sys-buf");
+    if (buf) {
+      const pct = (s.recent_buffer / s.recent_buffer_max) * 100;
+      buf.textContent = s.recent_buffer;
+      buf.style.color = pct > 90 ? "var(--sev5)" : pct > 60 ? "var(--sev2)" : "";
+      buf.title = `${s.recent_buffer} / ${s.recent_buffer_max} impacts (${pct.toFixed(0)} %)`;
+    }
+  }
+  const q = $("#sys-queue");
+  if (q && s.queue_depth != null) {
+    const dropped = s.queue_dropped || 0;
+    q.textContent = dropped ? `${s.queue_depth}·⚠${dropped}` : `${s.queue_depth}/${s.queue_max ?? "?"}`;
+    q.style.color = dropped ? "var(--sev5)" : "";
   }
 
   const dot = $("#mqtt-dot"), text = $("#mqtt-text");
@@ -688,6 +777,7 @@ async function initHistDefaults() {
 initHistDefaults();
 
 let histStrikes = [];
+let histAggregated = false;
 async function loadHistory() {
   const params = new URLSearchParams();
   if ($("#hist-from").value) params.set("from", new Date($("#hist-from").value).toISOString());
@@ -696,7 +786,11 @@ async function loadHistory() {
   if (+$("#hist-mds").value > 0) params.set("min_mds", $("#hist-mds").value);
   const j = await fetch("/api/strikes/history?" + params).then((r) => r.json());
   histStrikes = j.strikes;
-  $("#hist-count").textContent = `${histStrikes.length} impacts`;
+  histAggregated = !!j.aggregated;
+  // En mode agrégé, le serveur a regroupé sur une grille : on affiche le total réel.
+  $("#hist-count").textContent = histAggregated
+    ? `${(j.total ?? 0).toLocaleString("fr-FR")} impacts · ${histStrikes.length} cellules (~${Math.round((j.grid_deg || 0) * 111)} km)`
+    : `${histStrikes.length} impacts`;
   renderHistory();
   renderPerHourChart();
 }
@@ -704,12 +798,13 @@ function renderHistory() {
   if (histHeat) mapHist.removeLayer(histHeat);
   if (histMarkers) mapHist.removeLayer(histMarkers);
   if (!histStrikes.length) return;
-  const pts = histStrikes.map((s) => [s.lat, s.lon, 0.5]);
+  // Heatmap : intensité fixe en brut, pondérée par le nombre d'impacts en agrégé.
+  const maxN = histAggregated ? Math.max(1, ...histStrikes.map((s) => s.n || 1)) : 1;
+  const pts = histStrikes.map((s) => [
+    s.lat, s.lon,
+    histAggregated ? Math.max(0.15, Math.sqrt((s.n || 1) / maxN)) : 0.5,
+  ]);
   histHeat = L.heatLayer(pts, { radius: 18, blur: 22, maxZoom: 11 }).addTo(mapHist);
-  histMarkers = L.layerGroup();
-  histStrikes.forEach((s) => {
-    L.circleMarker([s.lat, s.lon], { radius: 3, color: colorForDistance(s.distance_km), weight: 1, fillOpacity: 0.6 }).addTo(histMarkers);
-  });
   mapHist.fitBounds(L.latLngBounds(pts.map((p) => [p[0], p[1]])));
 }
 async function renderPerHourChart() {

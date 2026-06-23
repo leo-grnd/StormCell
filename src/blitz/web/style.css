@@ -246,6 +246,14 @@ aside.sidebar {
 .stat .v.flash { animation: vFlash .5s ease; }
 @keyframes vFlash { 0% { color: var(--brand-hi); } 100% { color: var(--text); } }
 .stat.wide .row { display: flex; align-items: center; justify-content: space-between; }
+.sys-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+  font-size: 11.5px; color: var(--text-dim);
+  background: var(--surface-1); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); padding: 9px 12px;
+}
+.sys-grid span { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sys-grid b { color: var(--text); font-weight: 500; font-feature-settings: "tnum" 1; }
 .mini-btn {
   appearance: none; font: inherit; font-size: 10.5px; cursor: pointer;
   background: var(--surface-3); color: var(--text-dim); border: 1px solid var(--line);
@@ -453,3 +461,11 @@ aside.sidebar {
 .boot-grid .field input { width: 100%; }
 .boot-launch { width: 100%; margin-top: 20px; padding: 11px; font-size: 14px; font-weight: 600; }
 .boot-launch.ready { box-shadow: 0 0 0 1px var(--brand), 0 0 24px -6px var(--brand-glow); }
+
+.boot-rules { display: flex; flex-direction: column; gap: 8px; }
+.boot-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+.boot-check input[type="checkbox"] { accent-color: var(--brand); width: 15px; height: 15px; }
+.boot-eta { width: 56px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 6px; font: inherit; font-size: 12px; font-family: var(--mono); margin: 0 2px; }
+.boot-srv { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.boot-srv .btn { padding: 7px 13px; font-size: 12.5px; }
+.boot-srv-res { font-size: 11px; color: var(--text-faint); }

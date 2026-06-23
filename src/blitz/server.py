@@ -43,10 +43,28 @@ class ConfigIn(BaseModel):
     cluster_eps_km: float | None = None
     cluster_min_samples: int | None = None
     cell_window_minutes: int | None = None
+    min_mds_quality: int | None = None
+    tick_seconds: int | None = None
+    strike_ring_km: float | None = None
 
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+# ── Historique : décimation serveur (Lot D #19) ──────────────────────────────
+HIST_DECIMATE_THRESHOLD = 25_000   # au-delà, on agrège sur grille
+HIST_TARGET_POINTS = 8_000         # nb de points visé après agrégation
+
+
+def _hist_grid_deg(total: int) -> float:
+    """Pas de grille (degrés) pour ramener `total` impacts à ≈ HIST_TARGET_POINTS.
+
+    Heuristique : la densité de cellules occupées croît ~ comme la racine du nombre
+    de points, donc on dimensionne le pas en √(total/cible). Borné à [0.01°, 0.5°]
+    (≈ 1 km à 55 km) pour rester lisible.
+    """
+    scale = max(1.0, (total / HIST_TARGET_POINTS) ** 0.5)
+    return min(0.5, max(0.01, round(0.01 * scale, 4)))
 
 
 class Hub:
@@ -83,7 +101,12 @@ class AppContext:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.state = SharedState(max_strikes_recent=config.analysis.recent_buffer)
-        self.db = Database(Path(config.db.path))
+        self.db = Database(
+            Path(config.db.path),
+            retention_days=config.db.retention_days,
+            maintenance_interval_min=config.db.maintenance_interval_min,
+            vacuum_on_maintenance=config.db.vacuum_on_maintenance,
+        )
         self.state.stats["logged_total"] = self.db.count()
         self.hub = Hub()
         self.worker: MqttWorker | BlitzortungWsWorker | None = None
@@ -92,6 +115,15 @@ class AppContext:
         self.run_id = uuid.uuid4().hex[:12]   # les cell_id repartent à 1 à chaque run
         self._persisted_track_ts: dict[int, float] = {}
         self._open_warnings: set[int] = set()
+
+    def live_stats(self) -> dict:
+        """Snapshot des stats enrichi des métriques de débit de la queue de diffusion."""
+        snap = self.state.snapshot_stats()
+        q = getattr(self.worker, "queue", None)
+        if q is not None:
+            snap["queue_depth"] = q.qsize()
+            snap["queue_max"] = q.maxsize
+        return snap
 
     def on_nearby(self, s: Strike) -> None:
         """Listener appelé par le worker MQTT pour chaque impact dans la zone."""
@@ -165,7 +197,9 @@ def create_app(config: Config) -> FastAPI:
                         next_id=ctx._next_cell_id,
                     )
 
+                t0 = time.perf_counter()
                 cells, next_id = await loop.run_in_executor(None, _recompute)
+                ctx.state.set_cells_metrics((time.perf_counter() - t0) * 1000.0, len(cells))
                 ctx._next_cell_id = next_id
                 with ctx.state.lock:
                     ctx.state.cells = cells
@@ -261,7 +295,7 @@ def create_app(config: Config) -> FastAPI:
     # ── API REST ────────────────────────────────────────────────────────────
     @app.get("/api/stats")
     async def get_stats() -> dict:
-        snap = ctx.state.snapshot_stats()
+        snap = ctx.live_stats()
         snap["home"] = {"lat": config.home.lat, "lon": config.home.lon}
         snap["max_distance_km"] = config.filter.max_distance_km
         snap["alert_distance_km"] = config.filter.alert_distance_km
@@ -286,17 +320,31 @@ def create_app(config: Config) -> FastAPI:
         max_distance: float | None = None,
         min_mds: int | None = None,
         limit: int = Query(100_000, le=500_000),
+        decimate: bool = Query(True, description="agrège sur grille au-delà du seuil"),
     ) -> dict:
-        rows = await run_in_threadpool(
-            ctx.db.query_range,
-            from_unix=_iso_to_unix(date_from),
-            to_unix=_iso_to_unix(date_to),
-            max_distance_km=max_distance,
-            min_mds=min_mds,
-            limit=limit,
-        )
+        frm, to = _iso_to_unix(date_from), _iso_to_unix(date_to)
+        total = await run_in_threadpool(ctx.db.count_range, frm, to, max_distance, min_mds)
         bounds = await run_in_threadpool(ctx.db.date_bounds)
-        return {"strikes": rows, "bounds": {"min_unix": bounds[0], "max_unix": bounds[1]}}
+        box = {"min_unix": bounds[0], "max_unix": bounds[1]}
+        # Au-delà du seuil, on renvoie une grille agrégée (≈ HIST_TARGET_POINTS points)
+        # plutôt que des centaines de milliers de lignes : le navigateur reste fluide.
+        if decimate and total > HIST_DECIMATE_THRESHOLD:
+            grid = _hist_grid_deg(total)
+            rows = await run_in_threadpool(
+                ctx.db.query_range_decimated, grid, frm, to, max_distance, min_mds, HIST_TARGET_POINTS,
+            )
+            return {
+                "strikes": rows, "aggregated": True, "grid_deg": grid,
+                "total": total, "shown": len(rows), "bounds": box,
+            }
+        rows = await run_in_threadpool(
+            ctx.db.query_range, from_unix=frm, to_unix=to,
+            max_distance_km=max_distance, min_mds=min_mds, limit=limit,
+        )
+        return {
+            "strikes": rows, "aggregated": False,
+            "total": total, "shown": len(rows), "bounds": box,
+        }
 
     @app.get("/api/history/per_hour")
     async def get_per_hour(days: int = Query(30, ge=1, le=3650)) -> dict:
@@ -469,6 +517,9 @@ def create_app(config: Config) -> FastAPI:
             "cluster_eps_km": config.analysis.cluster_eps_km,
             "cluster_min_samples": config.analysis.cluster_min_samples,
             "cell_window_minutes": config.analysis.cell_window_minutes,
+            "min_mds_quality": config.analysis.min_mds_quality,
+            "tick_seconds": config.analysis.tick_seconds,
+            "strike_ring_km": config.analysis.strike_ring_km,
             "source_type": config.source.type,
         }
 
@@ -503,6 +554,15 @@ def create_app(config: Config) -> FastAPI:
         if cfg_in.cell_window_minutes is not None:
             config.analysis.cell_window_minutes = int(cfg_in.cell_window_minutes)
             sv.setdefault("analysis", {})["cell_window_minutes"] = int(cfg_in.cell_window_minutes)
+        if cfg_in.min_mds_quality is not None:
+            config.analysis.min_mds_quality = int(cfg_in.min_mds_quality)
+            sv.setdefault("analysis", {})["min_mds_quality"] = int(cfg_in.min_mds_quality)
+        if cfg_in.tick_seconds is not None:
+            config.analysis.tick_seconds = max(1, int(cfg_in.tick_seconds))
+            sv.setdefault("analysis", {})["tick_seconds"] = config.analysis.tick_seconds
+        if cfg_in.strike_ring_km is not None:
+            config.analysis.strike_ring_km = cfg_in.strike_ring_km
+            sv.setdefault("analysis", {})["strike_ring_km"] = cfg_in.strike_ring_km
         # Si le rayon ou HOME change, on borne immédiatement le système à l'anneau :
         # purge des impacts hors-zone + des cellules dont le centroïde est dehors.
         if "home" in sv or ("filter" in sv and "max_distance_km" in sv["filter"]):
@@ -522,7 +582,7 @@ def create_app(config: Config) -> FastAPI:
         await ctx.hub.connect(ws)
         try:
             # Envoi initial : stats + cellules courantes
-            await ws.send_json({"type": "stats", "data": ctx.state.snapshot_stats()})
+            await ws.send_json({"type": "stats", "data": ctx.live_stats()})
             await ws.send_json(
                 {"type": "cells", "data": [c.to_dict() for c in ctx.state.snapshot_cells()]}
             )

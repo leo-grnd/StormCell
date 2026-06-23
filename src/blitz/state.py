@@ -120,10 +120,19 @@ class SharedState:
             "source": None,        # ex. "ws1.blitzortung.org" ou "mqtt:blitzortung.ha.sed.pl"
             "latency_s": None,     # médiane (now - heure de l'éclair) — délai du flux
             "delay_s": None,       # médiane du champ "delay" Blitzortung (latence réseau de détection)
+            # ── Vague 5 / Lot D : métriques de débit & santé ────────────────────
+            "queue_dropped": 0,    # impacts perdus (queue de diffusion pleine)
+            "world_per_s": None,   # débit instantané (msg mondiaux/s, lissé)
+            "nearby_per_min": None,  # débit instantané dans la zone (impacts/min)
+            "cells_compute_ms": None,  # durée du dernier recalcul DBSCAN+tracking
+            "cells_count": 0,      # nb de cellules au dernier tick
         }
         # Fenêtres glissantes pour les médianes de latence (tous impacts mondiaux).
         self.latencies: deque[float] = deque(maxlen=500)
         self.delays: deque[float] = deque(maxlen=500)
+        # Repère pour dériver les débits entre deux snapshots (≥ 1 s d'écart).
+        self._rate_mark: tuple[float, int, int] | None = None
+        self._rate_cache: tuple[float | None, float | None] = (None, None)
 
     def add_strike(self, s: Strike) -> None:
         with self.lock:
@@ -163,6 +172,17 @@ class SharedState:
         with self.lock:
             self.stats["source"] = name
 
+    def record_drop(self) -> None:
+        """Comptabilise un impact perdu (queue de diffusion pleine)."""
+        with self.lock:
+            self.stats["queue_dropped"] += 1
+
+    def set_cells_metrics(self, compute_ms: float, count: int) -> None:
+        """Mémorise le coût et le résultat du dernier recalcul de cellules."""
+        with self.lock:
+            self.stats["cells_compute_ms"] = round(compute_ms, 1)
+            self.stats["cells_count"] = count
+
     @staticmethod
     def _median(values: deque[float]) -> float | None:
         if not values:
@@ -170,11 +190,33 @@ class SharedState:
         s = sorted(values)
         return round(s[len(s) // 2], 1)
 
+    def _rates_locked(self) -> tuple[float | None, float | None]:
+        """Débits monde/zone dérivés du delta depuis le dernier repère (≥ 1 s).
+
+        Robuste aux appels rapprochés (WS + polling) : on ne recalcule qu'au-delà
+        d'une seconde d'écart, sinon on renvoie la dernière valeur lissée.
+        """
+        now = time.time()
+        mark = self._rate_mark
+        if mark is None:
+            self._rate_mark = (now, self.stats["total_world"], self.stats["nearby"])
+            return self._rate_cache
+        dt = now - mark[0]
+        if dt >= 1.0:
+            wps = (self.stats["total_world"] - mark[1]) / dt
+            npm = (self.stats["nearby"] - mark[2]) / dt * 60.0
+            self._rate_cache = (round(wps, 1), round(npm, 1))
+            self._rate_mark = (now, self.stats["total_world"], self.stats["nearby"])
+        return self._rate_cache
+
     def snapshot_stats(self) -> dict[str, Any]:
         with self.lock:
             snap = dict(self.stats)
             snap["latency_s"] = self._median(self.latencies)
             snap["delay_s"] = self._median(self.delays)
+            snap["world_per_s"], snap["nearby_per_min"] = self._rates_locked()
+            snap["recent_buffer"] = len(self.recent)
+            snap["recent_buffer_max"] = self.recent.maxlen
             return snap
 
     def set_mqtt_connected(self, connected: bool) -> None:

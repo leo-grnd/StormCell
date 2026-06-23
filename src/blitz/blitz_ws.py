@@ -252,4 +252,5 @@ class BlitzortungWsWorker:
         try:
             self.queue.put_nowait(strike)
         except queue.Full:
+            self.state.record_drop()
             logger.warning("Queue pleine — drop d'un impact")

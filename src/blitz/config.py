@@ -44,6 +44,9 @@ class SourceConfig:
 @dataclass
 class DbConfig:
     path: str = "lightning_log.db"
+    retention_days: int = 0               # 0 = conservation illimitée ; sinon purge au-delà
+    maintenance_interval_min: int = 60    # cadence de la maintenance (purge + checkpoint WAL)
+    vacuum_on_maintenance: bool = False   # VACUUM après purge (récupère l'espace ; bloquant)
 
 
 @dataclass
@@ -56,12 +59,19 @@ class WebConfig:
 class AnalysisConfig:
     cluster_eps_km: float = 12.0
     cluster_min_samples: int = 4
+    cluster_algo: str = "dbscan"          # "dbscan" | "hdbscan" (densité variable, multi-échelle)
+    hdbscan_min_cluster_size: int = 8
     cell_window_minutes: int = 30
     tick_seconds: int = 7
     min_mds_quality: int = 0
     max_track_misses: int = 2
     eta_max_radius_km: float = 500.0
     max_strikes_for_clustering: int = 20_000
+    # Pré-agrégation grille avant DBSCAN (Lot D #18) : sous un gros orage on regroupe
+    # d'abord les strokes en cellules de grille fines (pondérées), puis on clusterise
+    # ces représentants au lieu de re-clusteriser tout le buffer brut. 0 = désactivé.
+    micro_grid_km: float = 1.5
+    micro_cluster_min_points: int = 1500   # seuil d'activation de la pré-agrégation
     motion_history_seconds: float = 900.0
     recent_buffer: int = 50_000  # impacts gardés en mémoire vive (doit couvrir la fenêtre en gros orage)
     # ── Vague 2 : tracking Kalman + nowcast ──────────────────────────────────
@@ -70,6 +80,13 @@ class AnalysisConfig:
     jump_window_min: float = 2.0         # fenêtre du taux d'éclairs instantané
     strike_ring_km: float = 15.0         # anneau « foudre arrivée » pour l'ETA au bord
     nowcast_horizon_min: float = 30.0    # horizon de la proba de coup sur HOME
+    # ── Vague 5 : regroupement strokes→flashs + lightning jump canonique (2σ) ──
+    flash_dt_s: float = 0.5              # écart temporel max pour regrouper des strokes en un flash
+    flash_dd_km: float = 10.0           # écart spatial max pour regrouper des strokes en un flash
+    jump_min_flash_rate: float = 10.0   # plancher de taux (flashs/min) pour qu'un jump compte
+    jump_dfrdt_lookback_s: float = 120.0  # fenêtre de la dérivée du taux (DFRDT, ≈ 2 min)
+    jump_sigma_window_s: float = 720.0    # fenêtre d'estimation de σ du bruit (≈ 12 min)
+    jump_sigma_mult: float = 2.0          # seuil en σ (canonique = 2)
 
 
 @dataclass
@@ -156,7 +173,7 @@ def _toml_value(v) -> str:
     if isinstance(v, int):
         return str(v)
     if isinstance(v, float):
-        return f"{v:g}"
+        return repr(v)   # round-trip complet (ne tronque pas les coordonnées)
     return f'"{v}"'
 
 

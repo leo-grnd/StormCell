@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS strikes (
 );
 CREATE INDEX IF NOT EXISTS idx_strikes_ts   ON strikes(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_strikes_dist ON strikes(distance_km);
+-- Index composite : sert les requêtes « fenêtre temporelle ∧ anneau » (history, anneau d'alerte).
+CREATE INDEX IF NOT EXISTS idx_strikes_ts_dist ON strikes(ts_unix, distance_km);
 
 -- Catalogue des cellules orageuses détectées (une ligne par cellule et par run).
 CREATE TABLE IF NOT EXISTS cells (
@@ -112,6 +114,9 @@ class Database:
         *,
         flush_interval: float = 2.0,
         flush_threshold: int = 200,
+        retention_days: int = 0,
+        maintenance_interval_min: int = 60,
+        vacuum_on_maintenance: bool = False,
     ) -> None:
         self.path = path
         self._lock = threading.Lock()
@@ -125,9 +130,14 @@ class Database:
         self._write_buf: list[tuple] = []
         self._flush_threshold = flush_threshold
         self._flush_interval = flush_interval
+        self.retention_days = retention_days
+        self._maint_interval_s = max(60.0, maintenance_interval_min * 60.0)
+        self.vacuum_on_maintenance = vacuum_on_maintenance
         self._closed = False
         self._flusher = threading.Thread(target=self._flush_loop, name="db-flusher", daemon=True)
         self._flusher.start()
+        self._maint = threading.Thread(target=self._maint_loop, name="db-maint", daemon=True)
+        self._maint.start()
 
     # ── écritures (batch) ────────────────────────────────────────────────────
     def insert_strike(
@@ -171,6 +181,67 @@ class Database:
             except Exception:
                 logger.exception("Erreur dans le thread flusher SQLite")
 
+    # ── maintenance (rétention / checkpoint / vacuum) ────────────────────────
+    def purge_older_than(self, cutoff_unix: float) -> int:
+        """Supprime impacts, trajectoires, prédictions et cellules plus vieux que `cutoff`.
+        Renvoie le nombre d'impacts supprimés."""
+        with self._lock:
+            self._flush_locked()
+            try:
+                deleted = self.conn.execute(
+                    "DELETE FROM strikes WHERE ts_unix < ?", (cutoff_unix,)
+                ).rowcount
+                self.conn.execute("DELETE FROM cell_track WHERE ts_unix < ?", (cutoff_unix,))
+                self.conn.execute("DELETE FROM predictions WHERE ts_made < ?", (cutoff_unix,))
+                self.conn.execute("DELETE FROM cells WHERE last_seen < ?", (cutoff_unix,))
+                self.conn.commit()
+                return int(deleted or 0)
+            except sqlite3.Error:
+                logger.exception("Erreur de purge SQLite")
+                return 0
+
+    def maintain(self) -> dict[str, Any]:
+        """Purge (si rétention), checkpoint du WAL, et VACUUM optionnel."""
+        result: dict[str, Any] = {"deleted": 0, "checkpointed": False, "vacuumed": False}
+        if self.retention_days and self.retention_days > 0:
+            cutoff = time.time() - self.retention_days * 86400.0
+            result["deleted"] = self.purge_older_than(cutoff)
+        with self._lock:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                result["checkpointed"] = True
+            except sqlite3.Error:
+                logger.exception("Erreur checkpoint WAL")
+        # VACUUM uniquement si on a réellement libéré des lignes (sinon coûteux pour rien).
+        if self.vacuum_on_maintenance and result["deleted"] > 0:
+            with self._lock:
+                try:
+                    self.conn.execute("VACUUM")
+                    result["vacuumed"] = True
+                except sqlite3.Error:
+                    logger.exception("Erreur VACUUM")
+        return result
+
+    def _maint_loop(self) -> None:
+        while not self._closed:
+            # Sommeil fractionné pour réagir vite à la fermeture.
+            slept = 0.0
+            while slept < self._maint_interval_s and not self._closed:
+                time.sleep(min(5.0, self._maint_interval_s - slept))
+                slept += 5.0
+            if self._closed:
+                break
+            try:
+                res = self.maintain()
+                if res["deleted"]:
+                    logger.info(
+                        "Maintenance DB : %d impacts purgés (rétention %d j)%s",
+                        res["deleted"], self.retention_days,
+                        " + VACUUM" if res["vacuumed"] else "",
+                    )
+            except Exception:
+                logger.exception("Erreur dans le thread de maintenance SQLite")
+
     # ── lectures (flush d'abord pour voir les écritures récentes) ────────────
     def count(self) -> int:
         with self._lock:
@@ -187,6 +258,19 @@ class Database:
         limit: int = 100_000,
     ) -> list[dict[str, Any]]:
         """Filtre par fenêtre temporelle / distance / nb détecteurs. Tri par ts_unix asc."""
+        where, params = self._range_where(from_unix, to_unix, max_distance_km, min_mds)
+        sql = f"SELECT * FROM strikes {where} ORDER BY ts_unix ASC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _range_where(
+        from_unix: float | None, to_unix: float | None,
+        max_distance_km: float | None, min_mds: int | None,
+    ) -> tuple[str, list[Any]]:
         conds: list[str] = []
         params: list[Any] = []
         if from_unix is not None:
@@ -198,15 +282,46 @@ class Database:
         if max_distance_km is not None:
             conds.append("distance_km <= ?")
             params.append(max_distance_km)
-        if min_mds:  # 0 ou None ⇒ pas de filtre (le broker peut ne pas fournir le MDS)
+        if min_mds:
             conds.append("mds >= ?")
             params.append(min_mds)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
-        sql = f"SELECT * FROM strikes {where} ORDER BY ts_unix ASC LIMIT ?"
-        params.append(limit)
+        return where, params
+
+    def count_range(
+        self, from_unix: float | None = None, to_unix: float | None = None,
+        max_distance_km: float | None = None, min_mds: int | None = None,
+    ) -> int:
+        """Nombre d'impacts qui correspondent au filtre (sert à décider la décimation)."""
+        where, params = self._range_where(from_unix, to_unix, max_distance_km, min_mds)
         with self._lock:
             self._flush_locked()
-            rows = self.conn.execute(sql, params).fetchall()
+            row = self.conn.execute(f"SELECT COUNT(*) FROM strikes {where}", params).fetchone()
+        return int(row[0])
+
+    def query_range_decimated(
+        self, grid_deg: float,
+        from_unix: float | None = None, to_unix: float | None = None,
+        max_distance_km: float | None = None, min_mds: int | None = None,
+        limit: int = 12_000,
+    ) -> list[dict[str, Any]]:
+        """Agrège les impacts sur une grille lat/lon de pas `grid_deg`.
+
+        Renvoie un point par cellule de grille occupée : centre arrondi, nombre
+        d'impacts `n`, distance la plus proche et timestamp le plus récent. Permet
+        d'afficher une heatmap d'une longue période sans transférer 500k points.
+        """
+        g = max(grid_deg, 1e-4)
+        where, params = self._range_where(from_unix, to_unix, max_distance_km, min_mds)
+        sql = (
+            f"SELECT ROUND(lat/?)*? AS lat, ROUND(lon/?)*? AS lon, "
+            f"COUNT(*) AS n, MIN(distance_km) AS distance_km, MAX(ts_unix) AS ts_unix "
+            f"FROM strikes {where} GROUP BY 1, 2 ORDER BY n DESC LIMIT ?"
+        )
+        full_params = [g, g, g, g, *params, limit]
+        with self._lock:
+            self._flush_locked()
+            rows = self.conn.execute(sql, full_params).fetchall()
         return [dict(r) for r in rows]
 
     def count_per_hour(self, days: int = 30) -> list[dict[str, Any]]:

@@ -10,9 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from blitz.analysis import update_cells  # noqa: E402
+from blitz.analysis import _count_flashes, update_cells  # noqa: E402
 from blitz.config import AnalysisConfig, HomeConfig  # noqa: E402
-from blitz.geo import unproject_local  # noqa: E402
+from blitz.geo import project_local, unproject_local  # noqa: E402
 from blitz.state import Strike  # noqa: E402
 
 HOME = HomeConfig(lat=44.243318, lon=4.716102)
@@ -198,6 +198,82 @@ class LineageTests(unittest.TestCase):
         # la cellule mère garde son id ; la nouvelle pointe vers elle
         new_cell = next(c for cid, c in cells2.items() if cid != parent_id)
         self.assertEqual(new_cell.parent_id, parent_id)
+
+
+class FlashGroupingTests(unittest.TestCase):
+    def test_strokes_same_flash(self):
+        # 5 strokes au même endroit en < 0.5 s → 1 flash.
+        strokes = [make_strike(0, 0, 1000.0 + i * 0.1) for i in range(5)]
+        self.assertEqual(_count_flashes(strokes, dt_s=0.5, dd_km=10.0), 1)
+
+    def test_strokes_separate_flashes(self):
+        # 5 strokes espacés de 2 s → 5 flashs distincts.
+        strokes = [make_strike(0, 0, 1000.0 + i * 2.0) for i in range(5)]
+        self.assertEqual(_count_flashes(strokes, dt_s=0.5, dd_km=10.0), 5)
+
+    def test_distance_splits_flashes(self):
+        # Même instant mais loin (>10 km) → 2 flashs.
+        strokes = [make_strike(0, 0, 1000.0), make_strike(40, 0, 1000.0)]
+        self.assertEqual(_count_flashes(strokes, dt_s=0.5, dd_km=10.0), 2)
+
+
+class AssociationTests(unittest.TestCase):
+    def _x(self, c):
+        return project_local(HOME.lat, HOME.lon, c.centroid_lat, c.centroid_lon)[0]
+
+    def test_no_id_swap_between_two_cells(self):
+        ts = 1_000_000.0
+
+        def two(cx_a, cx_b, t):
+            return ([make_strike(cx_a + (i - 2) * 0.3, 0, t + i) for i in range(5)] +
+                    [make_strike(cx_b + (i - 2) * 0.3, 0, t + i) for i in range(5)])
+
+        cells1, nid = update_cells(HOME, two(0, 30, ts), previous={}, cfg=CFG, now=ts + 10, next_id=1)
+        self.assertEqual(len(cells1), 2)
+        id_a = next(cid for cid, c in cells1.items() if self._x(c) < 15)
+        id_b = next(cid for cid, c in cells1.items() if self._x(c) >= 15)
+        # tick 2 : les deux se rapprochent (toujours séparées) — pas d'inversion d'ID.
+        cells2, _ = update_cells(HOME, two(5, 25, ts + 60), previous=cells1, cfg=CFG, now=ts + 70, next_id=nid)
+        self.assertEqual(len(cells2), 2)
+        self.assertEqual(next(cid for cid, c in cells2.items() if self._x(c) < 15), id_a)
+        self.assertEqual(next(cid for cid, c in cells2.items() if self._x(c) >= 15), id_b)
+
+
+class GridClusteringTests(unittest.TestCase):
+    """La pré-agrégation grille (Lot D #18) doit donner le même résultat que le
+    DBSCAN par-impact sur une grosse charge (équivalence, pas seulement vitesse)."""
+
+    def _centroids(self, cells):
+        return sorted(self._x(c) for c in cells.values())
+
+    def _x(self, c):
+        return project_local(HOME.lat, HOME.lon, c.centroid_lat, c.centroid_lon)[0]
+
+    def test_grid_matches_per_strike_on_large_input(self):
+        rng = random.Random(2024)
+        ts = 1_000_000.0
+        strikes: list[Strike] = []
+        # 3 amas denses bien séparés, 600 strokes chacun → 1800 ≥ micro_cluster_min_points.
+        for cx, cy in [(25, 0), (-30, 20), (0, -40)]:
+            for _ in range(600):
+                strikes.append(make_strike(cx + rng.uniform(-2, 2), cy + rng.uniform(-2, 2), ts))
+                ts += 0.05
+
+        cfg_on = AnalysisConfig(cluster_eps_km=8.0, cluster_min_samples=3,
+                                micro_grid_km=1.5, micro_cluster_min_points=1500)
+        cfg_off = AnalysisConfig(cluster_eps_km=8.0, cluster_min_samples=3,
+                                 micro_grid_km=1.5, micro_cluster_min_points=10**9)
+
+        cells_on, _ = update_cells(HOME, strikes, previous={}, cfg=cfg_on, now=ts, next_id=1)
+        cells_off, _ = update_cells(HOME, strikes, previous={}, cfg=cfg_off, now=ts, next_id=1)
+
+        self.assertEqual(len(cells_on), 3)
+        self.assertEqual(len(cells_off), 3)
+        # tous les strokes classés dans les deux modes (amas denses, pas de bruit)
+        self.assertEqual(sum(c.strikes_count for c in cells_on.values()), 1800)
+        # centroïdes appariés à < 1 km près
+        for a, b in zip(self._centroids(cells_on), self._centroids(cells_off), strict=True):
+            self.assertLess(abs(a - b), 1.0)
 
 
 class PersistenceTests(unittest.TestCase):

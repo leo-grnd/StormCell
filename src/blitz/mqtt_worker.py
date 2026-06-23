@@ -117,6 +117,7 @@ class MqttWorker:
         try:
             self.queue.put_nowait(strike)
         except queue.Full:
+            self.state.record_drop()
             logger.warning("Queue MQTT pleine — drop d'un impact")
 
     # ── cycle de vie ────────────────────────────────────────────────────────

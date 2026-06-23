@@ -122,33 +122,53 @@ def lightning_jump(
     history: Sequence[tuple[float, float]],
     sigma_mult: float = 2.0,
     min_points: int = 6,
-    min_rate: float = 2.0,
+    min_rate: float = 10.0,
+    lookback_s: float = 120.0,
+    sigma_window_s: float = 720.0,
 ) -> tuple[bool, float]:
-    """Détecteur de *lightning jump* simplifié (style Schultz et al., seuil 2σ).
+    """Détecteur de *lightning jump* 2σ (d'après Schultz et al. 2009).
 
-    `history` : série (t_unix, taux d'éclairs /min). On calcule la dérivée du taux
-    (DFRDT) entre points consécutifs, puis on compare la dernière valeur à 2σ du
-    bruit de fond. Une flambée soudaine du taux d'éclairs précède souvent le sévère
-    (grêle / rafale descendante / tornade) de ~10–15 min.
+    `history` : série (t_unix, taux de flashs /min). On calcule la dérivée du taux
+    (DFRDT) sur ~`lookback_s` (≈ 2 min), puis on la compare à `sigma_mult`×σ du bruit
+    de DFRDT sur ~`sigma_window_s` (≈ 12 min). Un jump est retenu si le taux courant
+    dépasse `min_rate` flashs/min ET DFRDT ≥ 2σ. Préavis typique ~20 min vers le sévère.
 
-    Renvoie (detected, level) où level = DFRDT_dernier / σ_fond.
+    Renvoie (detected, level) où level = DFRDT_courant / σ_fond.
     """
     if len(history) < min_points:
         return False, 0.0
     t = np.asarray([p[0] for p in history], dtype=float)
     r = np.asarray([p[1] for p in history], dtype=float)
-    dt = np.diff(t) / 60.0
-    dt[dt <= 0] = 1e-6
-    dfrdt = np.diff(r) / dt
-    if len(dfrdt) < 3:
+    t0, t_now = float(t[0]), float(t[-1])
+    look_min = lookback_s / 60.0
+
+    def dfrdt_at(idx: int) -> float | None:
+        ti = t[idx]
+        tp = ti - lookback_s
+        if tp < t0:
+            return None
+        rp = float(np.interp(tp, t, r))
+        return (float(r[idx]) - rp) / look_min
+
+    latest = dfrdt_at(len(t) - 1)
+    if latest is None:
         return False, 0.0
-    background = dfrdt[:-1]
+
+    background = []
+    for idx in range(len(t) - 1):
+        if t_now - t[idx] > sigma_window_s:
+            continue
+        d = dfrdt_at(idx)
+        if d is not None:
+            background.append(d)
+    if len(background) < 3:
+        return False, 0.0
     sigma = float(np.std(background))
-    latest = float(dfrdt[-1])
-    current_rate = float(r[-1])
     if sigma < 1e-6:
         return False, 0.0
+
     level = latest / sigma
+    current_rate = float(r[-1])
     detected = bool(level >= sigma_mult and latest > 0.0 and current_rate >= min_rate)
     return detected, round(level, 2)
 

@@ -52,6 +52,17 @@ class UpdateHomeTests(unittest.TestCase):
     def test_missing_file_returns_false(self):
         self.assertFalse(update_home(None, 1.0, 2.0))
 
+    def test_preserves_coordinate_precision(self):
+        p = Path(tempfile.gettempdir()) / f"sc_cfg_prec_{os.getpid()}.toml"
+        p.write_text("[home]\nlat = 1.0\nlon = 2.0\n", encoding="utf-8")
+        try:
+            update_home(p, 44.243318, 4.716102)
+            c = load_config(p)
+            self.assertEqual(c.home.lat, 44.243318)   # pas de troncature
+            self.assertEqual(c.home.lon, 4.716102)
+        finally:
+            p.unlink()
+
 
 class UpdateConfigTests(unittest.TestCase):
     def test_multi_section_update_and_add(self):
