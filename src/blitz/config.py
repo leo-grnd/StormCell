@@ -101,6 +101,11 @@ class PredictConfig:
 
 
 @dataclass
+class OpsConfig:
+    continuous_mode: bool = False     # « Mode 24/7 » activé (supervision continue)
+    archive_path: str = ""
+
+@dataclass
 class LogConfig:
     file: str = "blitz.log"
     max_bytes: int = 10 * 1024 * 1024
@@ -117,6 +122,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     predict: PredictConfig = field(default_factory=PredictConfig)
+    ops: OpsConfig = field(default_factory=OpsConfig)
     log: LogConfig = field(default_factory=LogConfig)
     source_path: Path | None = None
 
@@ -157,6 +163,7 @@ def load_config(path: Path | str | None = None) -> Config:
             "web": cfg.web,
             "analysis": cfg.analysis,
             "predict": cfg.predict,
+            "ops": cfg.ops,
             "log": cfg.log,
         }
         for name, section in section_map.items():
