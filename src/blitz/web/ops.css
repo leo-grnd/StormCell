@@ -94,6 +94,18 @@ body.rec-on .ops-top { box-shadow: inset 0 -2px 0 rgba(248,81,73,.55); }
 .ops-result { font-family: var(--mono); font-size: 12.5px; margin-top: 12px; min-height: 18px; color: var(--text-mono); }
 .ops-result.ok { color: var(--sev0); } .ops-result.err { color: var(--sev5); }
 
+/* zone dangereuse (purge) */
+.danger-zone { margin-top: 18px; padding: 14px 16px; border: 1px solid rgba(248,81,73,.4);
+  border-radius: var(--r-md); background: linear-gradient(160deg, rgba(248,81,73,.06), transparent); }
+.dz-head { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; font-weight: 600;
+  color: var(--sev5); margin-bottom: 11px; }
+.dz-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.dz-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+.dz-check input { accent-color: var(--sev5); width: 15px; height: 15px; }
+.btn.danger { background: var(--sev5); color: #fff; }
+.btn.danger:hover { background: #e3473f; }
+.btn.danger:disabled { opacity: .55; cursor: default; }
+
 /* supervision (instructions OS) */
 .ops-superv { margin-top: 12px; }
 .ops-superv h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }

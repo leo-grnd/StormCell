@@ -42,7 +42,7 @@ cluster_min_samples = 4
 cluster_algo = "dbscan"      # "dbscan" | "hdbscan" (densité variable, sépare mieux les lignes d'orage)
 hdbscan_min_cluster_size = 8 # taille mini d'une cellule en mode hdbscan
 cell_window_minutes = 30  # fenêtre glissante pour le tracking
-tick_seconds = 7  # cadence du recalcul des cellules
+tick_seconds = 3  # cadence du recalcul des cellules (robuste jusqu'à ~1 s)
 min_mds_quality = 0  # impacts ignorés si mds < cette valeur (0 = pas de filtre)
 max_track_misses = 2         # une cellule survit N ticks "creux" avant disparition
 eta_max_radius_km = 500      # ETA HOME calculée seulement pour cellules sous ce rayon

@@ -147,6 +147,15 @@ class MaintenanceTests(_DbCase):
         self.assertTrue(res["checkpointed"])
         self.assertEqual(res["deleted"], 0)   # retention_days=0 → aucune purge
 
+    def test_purge_all(self):
+        self._add(6)
+        self.db.geocode_put("k", "v")
+        self.assertEqual(self.db.count(), 6)
+        n = self.db.purge_all()
+        self.assertEqual(n, 6)
+        self.assertEqual(self.db.count(), 0)              # tout est vidé
+        self.assertIsNone(self.db.geocode_get("k"))       # géocache compris
+
     def test_storage_info(self):
         self._add(4)
         info = self.db.storage_info()

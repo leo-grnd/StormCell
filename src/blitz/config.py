@@ -62,7 +62,7 @@ class AnalysisConfig:
     cluster_algo: str = "dbscan"          # "dbscan" | "hdbscan" (densité variable, multi-échelle)
     hdbscan_min_cluster_size: int = 8
     cell_window_minutes: int = 30
-    tick_seconds: int = 7
+    tick_seconds: int = 3          # cadence du recalcul des cellules (robuste jusqu'à ~1 s)
     min_mds_quality: int = 0
     max_track_misses: int = 2
     eta_max_radius_km: float = 500.0
@@ -103,7 +103,8 @@ class PredictConfig:
 @dataclass
 class OpsConfig:
     continuous_mode: bool = False     # « Mode 24/7 » activé (supervision continue)
-    archive_path: str = ""
+    archive_path: str = ""            # base d'archive 24/7 (vide → <dossier db>/24-7/archive.db)
+
 
 @dataclass
 class LogConfig:

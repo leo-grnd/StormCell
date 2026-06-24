@@ -205,6 +205,24 @@ class Database:
                 logger.exception("Erreur de purge SQLite")
                 return 0
 
+    def purge_all(self) -> int:
+        """Vide TOUTES les tables (impacts, cellules, trajectoires, prédictions, géocache)
+        et récupère l'espace disque (VACUUM). Renvoie le nombre d'impacts supprimés.
+        Action destructive et irréversible."""
+        with self._lock:
+            self._flush_locked()
+            self._write_buf.clear()   # rien d'en attente après un vidage total
+            try:
+                deleted = self.conn.execute("DELETE FROM strikes").rowcount
+                for table in ("cells", "cell_track", "predictions", "geocache"):
+                    self.conn.execute(f"DELETE FROM {table}")
+                self.conn.commit()
+                self.conn.execute("VACUUM")
+                return int(deleted or 0)
+            except sqlite3.Error:
+                logger.exception("Erreur de purge totale")
+                return 0
+
     def maintain(self) -> dict[str, Any]:
         """Purge (si rétention), checkpoint du WAL, et VACUUM optionnel."""
         result: dict[str, Any] = {"deleted": 0, "checkpointed": False, "vacuumed": False}

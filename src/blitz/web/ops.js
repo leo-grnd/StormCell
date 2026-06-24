@@ -153,6 +153,22 @@ $("#btn-backup").addEventListener("click", async (e) => {
   finally { e.target.disabled = false; }
 });
 
+$("#btn-purge").addEventListener("click", async (e) => {
+  const withArchive = $("#purge-archive").checked;
+  const msg = withArchive
+    ? "PURGER TOUTES LES BASES, Y COMPRIS L'ARCHIVE 24/7 ?\n\nCette action est irréversible et supprime toutes les données capturées."
+    : "Purger la base normale (impacts, cellules, prédictions…) ?\n\nIrréversible. L'archive 24/7 sera préservée.";
+  if (!window.confirm(msg)) return;
+  e.target.disabled = true; result("Purge en cours…");
+  try {
+    const j = await post("/api/ops/purge", { include_archive: withArchive });
+    const arch = j.purged_archive != null ? ` · archive : ${fmtNum(j.purged_archive)}` : "";
+    result(`Bases purgées · base normale : ${fmtNum(j.purged_main)} impacts${arch}.`);
+    refresh();
+  } catch (err) { result("Échec : " + err.message, false); }
+  finally { e.target.disabled = false; }
+});
+
 // onglets de supervision
 document.querySelectorAll(".tabs2 button").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll(".tabs2 button").forEach((x) => x.classList.remove("active"));

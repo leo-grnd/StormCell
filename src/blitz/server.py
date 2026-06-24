@@ -55,6 +55,10 @@ class RetentionIn(BaseModel):
 class ModeIn(BaseModel):
     enabled: bool
 
+
+class PurgeIn(BaseModel):
+    include_archive: bool = False
+
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -716,6 +720,18 @@ def create_app(config: Config) -> FastAPI:
     async def ops_maintain() -> dict:
         res = await run_in_threadpool(ctx.db.maintain)
         return {"ok": True, **res}
+
+    @app.post("/api/ops/purge")
+    async def ops_purge(p: PurgeIn) -> dict:
+        """Vide la base normale (et l'archive si demandé ET active). Irréversible."""
+        purged_main = await run_in_threadpool(ctx.db.purge_all)
+        total = await run_in_threadpool(ctx.db.count)
+        with ctx.state.lock:
+            ctx.state.stats["logged_total"] = total
+        purged_archive = None
+        if p.include_archive and ctx.archive is not None:
+            purged_archive = await run_in_threadpool(ctx.archive.purge_all)
+        return {"ok": True, "purged_main": purged_main, "purged_archive": purged_archive}
 
     @app.post("/api/ops/backup")
     async def ops_backup() -> dict:
