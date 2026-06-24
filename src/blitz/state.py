@@ -60,6 +60,7 @@ class Cell:
     strike_probability: Optional[float] = None    # 0..1 : proba de toucher HOME dans l'horizon nowcast
     jump_detected: bool = False                   # flambée du taux d'éclairs (signal orage sévère)
     severity: float = 0.0                         # indice de sévérité 0..5
+    motion_provisional: bool = False              # ETA emprunté au consensus régional (P4, faible confiance)
     parent_id: Optional[int] = None               # cellule mère si issue d'un split
     merged_from: list[int] = field(default_factory=list)  # ids fusionnés dans cette cellule
     # ── état interne du filtre de Kalman (non sérialisé) ─────────────────────
@@ -90,6 +91,7 @@ class Cell:
             "radius_trend": self.radius_trend,
             "jump_detected": self.jump_detected,
             "severity": round(self.severity, 1),
+            "motion_provisional": self.motion_provisional,
             "confidence": round(self.confidence, 3),
             "parent_id": self.parent_id,
             "merged_from": self.merged_from,

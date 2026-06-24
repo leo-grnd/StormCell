@@ -300,6 +300,60 @@ class GridClusteringTests(unittest.TestCase):
             self.assertLess(abs(a - b), 1.0)
 
 
+class RegionalMotionPriorTests(unittest.TestCase):
+    """P4 : une jeune cellule sans vitesse propre hérite d'un ETA provisoire emprunté
+    au consensus des cellules établies voisines (et reste marquée provisoire)."""
+
+    def _advance_established(self, n_cells: int, ticks: int):
+        """Fait vivre n_cells cellules qui dérivent vers HOME pour qu'elles aient une vitesse."""
+        prev: dict = {}
+        next_id = 1
+        ts = 0.0
+        for tick in range(ticks):
+            strikes = []
+            for k in range(n_cells):
+                cx = 40.0 - tick * 1.0          # se rapprochent (plein ouest → HOME)
+                cy = -10.0 + k * 12.0           # séparées en latitude
+                strikes += [make_strike(cx + (i - 2) * 0.3, cy, ts + i) for i in range(5)]
+            cells, next_id = update_cells(HOME, strikes, previous=prev, cfg=CFG, now=ts + 10, next_id=next_id)
+            prev = cells
+            ts += 60
+        return prev, next_id, ts
+
+    def test_young_cell_gets_provisional_eta(self):
+        prev, next_id, ts = self._advance_established(2, ticks=4)
+        established = [c for c in prev.values() if c.velocity_kmh is not None and not c.motion_provisional]
+        self.assertGreaterEqual(len(established), 2)   # consensus disponible
+
+        # Nouvelle cellule qui apparaît à côté (1 seul tick → pas de vitesse propre).
+        strikes = []
+        for k in range(2):                              # garder les anciennes vivantes
+            cx = 40.0 - 4 * 1.0
+            cy = -10.0 + k * 12.0
+            strikes += [make_strike(cx + (i - 2) * 0.3, cy, ts + i) for i in range(5)]
+        strikes += [make_strike(36.0 + (i - 2) * 0.3, 18.0, ts + i) for i in range(5)]  # jeune cellule
+        cells, _ = update_cells(HOME, strikes, previous=prev, cfg=CFG, now=ts + 10, next_id=next_id)
+
+        young = [c for c in cells.values() if c.motion_provisional]
+        self.assertEqual(len(young), 1)
+        y = young[0]
+        self.assertIsNotNone(y.velocity_kmh)            # mouvement emprunté
+        self.assertIsNotNone(y.eta_minutes)             # ETA provisoire dérivé
+        self.assertEqual(y.kf_updates, 1)               # bien une jeune cellule
+
+    def test_prior_disabled(self):
+        prev, next_id, ts = self._advance_established(2, ticks=4)
+        cfg_off = AnalysisConfig(cluster_eps_km=8.0, cluster_min_samples=3,
+                                 cell_window_minutes=30, regional_motion_prior=False)
+        strikes = []
+        for k in range(2):
+            cx, cy = 40.0 - 4 * 1.0, -10.0 + k * 12.0
+            strikes += [make_strike(cx + (i - 2) * 0.3, cy, ts + i) for i in range(5)]
+        strikes += [make_strike(36.0 + (i - 2) * 0.3, 18.0, ts + i) for i in range(5)]
+        cells, _ = update_cells(HOME, strikes, previous=prev, cfg=cfg_off, now=ts + 10, next_id=next_id)
+        self.assertFalse(any(c.motion_provisional for c in cells.values()))
+
+
 class PersistenceTests(unittest.TestCase):
     """La persistance fade-out doit garder une cellule sur quelques ticks creux."""
 

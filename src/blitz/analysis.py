@@ -381,6 +381,90 @@ def _apply_kalman(cell: Cell, prev: Cell | None, home: HomeConfig, cfg: Analysis
     )
 
 
+def _regional_velocity(cells: dict[int, Cell], cfg: AnalysisConfig) -> tuple[float, float] | None:
+    """Vitesse de consensus (vx, vy en km/h, repère est/nord) des cellules établies.
+
+    Médiane des composantes : robuste à une cellule au comportement aberrant.
+    Renvoie None si trop peu de cellules suivies pour un consensus fiable.
+    """
+    vxs: list[float] = []
+    vys: list[float] = []
+    for c in cells.values():
+        if c.velocity_kmh is None or c.misses != 0 or c.motion_provisional:
+            continue
+        h = math.radians(c.heading_deg or 0.0)
+        vxs.append(c.velocity_kmh * math.sin(h))   # est
+        vys.append(c.velocity_kmh * math.cos(h))   # nord
+    if len(vxs) < cfg.regional_motion_min_cells:
+        return None
+    vx, vy = float(np.median(vxs)), float(np.median(vys))
+    if math.hypot(vx, vy) < 1e-3:
+        return None
+    return vx, vy
+
+
+def _borrow_motion(cell: Cell, home: HomeConfig, cfg: AnalysisConfig, vx_kmh: float, vy_kmh: float) -> None:
+    """Applique un mouvement *provisoire* (km/h, est/nord) à une jeune cellule et en
+    dérive ETA/proba avec une forte incertitude (emprunt → faible confiance)."""
+    speed_kmh = math.hypot(vx_kmh, vy_kmh)
+    cell.velocity_kmh = speed_kmh
+    cell.heading_deg = (math.degrees(math.atan2(vx_kmh, vy_kmh)) + 360.0) % 360.0
+    cell.motion_provisional = True
+
+    d_home = haversine(home.lat, home.lon, cell.centroid_lat, cell.centroid_lon)
+    if cell.ref_lat is None or d_home > cfg.eta_max_radius_km:
+        cell.closest_approach_km = d_home
+        return
+
+    hx, hy = project_local(cell.ref_lat, cell.ref_lon, home.lat, home.lon)
+    cx, cy = project_local(cell.ref_lat, cell.ref_lon, cell.centroid_lat, cell.centroid_lon)
+    vx, vy = vx_kmh / 3600.0, vy_kmh / 3600.0   # km/s
+    to_hx, to_hy = hx - cx, hy - cy
+    v2 = vx * vx + vy * vy
+    t_closest = (to_hx * vx + to_hy * vy) / v2   # secondes
+    pos_std = 2.0 * cfg.kf_meas_noise_km + cell.radius_km   # incertitude volontairement large
+
+    if t_closest <= 0:   # s'éloigne
+        cell.closest_approach_km = math.hypot(to_hx, to_hy)
+        return
+    clx, cly = cx + vx * t_closest, cy + vy * t_closest
+    closest = math.hypot(hx - clx, hy - cly)
+    cell.eta_minutes = t_closest / 60.0
+    cell.closest_approach_km = closest
+    cell.eta_uncertainty_min = (pos_std / (vx_kmh / 3600.0 + _EPS)) / 60.0
+    r_eff = cell.radius_km + cfg.strike_ring_km
+    cell.eta_strike_minutes = _eta_to_radius(cx, cy, vx, vy, hx, hy, r_eff)
+    cell.strike_probability = strike_probability(
+        closest_approach_km=closest, eta_minutes=cell.eta_minutes,
+        pos_std_km=pos_std, effective_radius_km=r_eff,
+        horizon_min=cfg.nowcast_horizon_min,
+    )
+
+
+def _apply_regional_motion_prior(cells: dict[int, Cell], home: HomeConfig, cfg: AnalysisConfig) -> None:
+    """P4 : donne un mouvement provisoire aux jeunes cellules (sans vitesse propre)
+    en empruntant le consensus régional, pour un préavis dès la naissance."""
+    if not cfg.regional_motion_prior:
+        return
+    consensus = _regional_velocity(cells, cfg)
+    if consensus is None:
+        return
+    established = [c for c in cells.values()
+                  if c.velocity_kmh is not None and c.misses == 0 and not c.motion_provisional]
+    vx_kmh, vy_kmh = consensus
+    for cell in cells.values():
+        if cell.velocity_kmh is not None:
+            continue   # a déjà son mouvement propre
+        # Rester « régional » : exiger une cellule établie sous le rayon.
+        near = any(
+            haversine(cell.centroid_lat, cell.centroid_lon, e.centroid_lat, e.centroid_lon)
+            <= cfg.regional_motion_radius_km
+            for e in established
+        )
+        if near:
+            _borrow_motion(cell, home, cfg, vx_kmh, vy_kmh)
+
+
 def _confidence(cell: Cell, n_track: int, has_motion: bool) -> float:
     """Score 0..1 basé sur la longueur du track, le nb d'impacts et la stabilité."""
     if not has_motion:
@@ -521,6 +605,9 @@ def update_cells(
         )
         cell.confidence = _confidence(cell, len(track), cell.velocity_kmh is not None)
         new_cells[cid] = cell
+
+    # P4 : préavis provisoire pour les jeunes cellules via le consensus de mouvement.
+    _apply_regional_motion_prior(new_cells, home, cfg)
 
     # Lignée split/merge (avant la persistance fade-out)
     merged_ids = _resolve_lineage(new_cells, set(used), previous, cfg)

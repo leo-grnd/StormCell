@@ -230,7 +230,9 @@ def create_app(config: Config) -> FastAPI:
                     ctx._persisted_track_ts[cid] = cd["last_seen"]
             prob = cd.get("strike_probability") or 0.0
             eta_s = cd.get("eta_strike_minutes")
-            if eta_s is not None and prob >= min_prob:
+            # On ne journalise pas les ETA empruntés (P4) : la vérification ne doit
+            # contenir que des prédictions issues d'un vrai suivi de la cellule.
+            if eta_s is not None and prob >= min_prob and not cd.get("motion_provisional"):
                 current_warn.add(cid)
                 if cid not in ctx._open_warnings:   # nouvelle alerte → on la journalise une fois
                     new_preds.append({

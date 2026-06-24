@@ -290,6 +290,7 @@ aside.sidebar {
 .badge-up { background: rgba(248,81,73,.14); color: #ff9d97; }
 .badge-down { background: rgba(63,185,80,.14); color: #74d488; }
 .badge-stable { background: var(--surface-3); color: var(--text-dim); }
+.badge-prov { background: rgba(90,162,255,.12); color: #8fbcff; border: 1px dashed #355; font-style: italic; }
 .cc-eta { margin-left: auto; text-align: right; }
 .cc-eta .lab { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
 .cc-eta .val { font-family: var(--mono); font-size: 17px; font-weight: 600; color: var(--text); line-height: 1; }

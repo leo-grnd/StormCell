@@ -386,19 +386,22 @@ function buildCellCard(c, sevCol) {
   card.className = "cell-card" + (c.jump_detected ? " severe" : "") + (isGhost ? " ghost" : "");
   card.style.setProperty("--sev-color", sevCol);
 
+  const prov = !!c.motion_provisional;   // ETA emprunté au consensus régional (P4)
+  const tilde = prov ? "~" : "";
   let etaLab = "ETA foudre", etaVal = "—", etaCls = "safe";
   if (c.eta_strike_minutes != null) {
-    etaVal = `${Math.round(c.eta_strike_minutes)}′`;
-    etaCls = c.eta_strike_minutes <= 15 ? "urgent" : "";
+    etaVal = `${tilde}${Math.round(c.eta_strike_minutes)}′`;
+    etaCls = (!prov && c.eta_strike_minutes <= 15) ? "urgent" : "";
   } else if (c.eta_minutes != null) {
-    etaLab = "ETA centre"; etaVal = `${Math.round(c.eta_minutes)}′`; etaCls = "";
+    etaLab = "ETA centre"; etaVal = `${tilde}${Math.round(c.eta_minutes)}′`; etaCls = "";
   } else if (isGhost) {
     etaLab = "Statut"; etaVal = "perdue";
   }
 
   const jumpBadge = c.jump_detected ? '<span class="badge badge-jump">⚡ JUMP</span>' : "";
+  const provBadge = prov ? '<span class="badge badge-prov" title="ETA provisoire : mouvement emprunté aux cellules voisines (suivi pas encore établi)">≈ prov.</span>' : "";
   const lineage = c.parent_id ? `<span class="badge badge-stable">⑂ #${c.parent_id}</span>` : "";
-  const vel = c.velocity_kmh ? `${c.velocity_kmh.toFixed(0)} km/h` : "—";
+  const vel = c.velocity_kmh ? `${tilde}${c.velocity_kmh.toFixed(0)} km/h` : "—";
   const cap = c.heading_deg != null ? `${c.heading_deg.toFixed(0)}°` : "—";
   const flash = c.flash_rate_per_min != null ? c.flash_rate_per_min.toFixed(0) : "?";
   const prob = Math.round((c.strike_probability ?? 0) * 100);
@@ -407,7 +410,7 @@ function buildCellCard(c, sevCol) {
     <div class="cc-top">
       <span class="cc-id">#${c.cell_id}</span>
       <span class="sev-chip">${(c.severity ?? 0).toFixed(1)}</span>
-      ${jumpBadge}${trendBadge(c.intensity_trend)}${lineage}
+      ${jumpBadge}${provBadge}${trendBadge(c.intensity_trend)}${lineage}
       <span class="cc-eta"><span class="lab">${etaLab}</span><br><span class="val ${etaCls}">${etaVal}</span></span>
     </div>
     <canvas class="spark"></canvas>
@@ -430,7 +433,7 @@ function updateThreatBanner(cells) {
   const banner = $("#threat-banner");
   if (!banner) return;
   const appr = cells
-    .filter((c) => c.eta_strike_minutes != null && (c.misses ?? 0) === 0)
+    .filter((c) => c.eta_strike_minutes != null && (c.misses ?? 0) === 0 && !c.motion_provisional)
     .sort((a, b) => a.eta_strike_minutes - b.eta_strike_minutes);
   const jump = cells.find((c) => c.jump_detected && (c.misses ?? 0) === 0);
   if (appr.length && appr[0].eta_strike_minutes <= 45) {
@@ -485,6 +488,7 @@ function renderCells(cells) {
 
     // projection future + jalons + cône
     if (c.velocity_kmh && c.heading_deg != null) {
+      const pf = c.motion_provisional ? 0.5 : 1;   // projection atténuée si ETA provisoire
       const rad = (c.heading_deg * Math.PI) / 180;
       const cosLat = Math.cos((c.centroid.lat * Math.PI) / 180);
       const at = (min) => {
@@ -506,10 +510,10 @@ function renderCells(cells) {
         [tip[0] + ex * grow, tip[1] + ey * grow],
         [tip[0] - ex * grow, tip[1] - ey * grow],
         [c.centroid.lat - ex, c.centroid.lon - ey],
-      ], { color: sevCol, weight: 0, fillColor: sevCol, fillOpacity: 0.08 }).addTo(state.cellLayer);
-      L.circle(tip, { radius: rkm * grow * 1000, color: sevCol, weight: 1, fill: false, dashArray: "3,5", opacity: 0.45 }).addTo(state.cellLayer);
+      ], { color: sevCol, weight: 0, fillColor: sevCol, fillOpacity: 0.08 * pf }).addTo(state.cellLayer);
+      L.circle(tip, { radius: rkm * grow * 1000, color: sevCol, weight: 1, fill: false, dashArray: "3,5", opacity: 0.45 * pf }).addTo(state.cellLayer);
 
-      L.polyline([[c.centroid.lat, c.centroid.lon], tip], { color: "#f85149", weight: 2, dashArray: "6,5" }).addTo(state.cellLayer);
+      L.polyline([[c.centroid.lat, c.centroid.lon], tip], { color: "#f85149", weight: 2, opacity: pf, dashArray: c.motion_provisional ? "2,6" : "6,5" }).addTo(state.cellLayer);
       [10, 20, 30].forEach((m) => {
         L.circleMarker(at(m), { radius: 3, color: "#f85149", fillColor: "#0a0d13", fillOpacity: 1, weight: 1.5 })
           .bindTooltip(`+${m} min`, { direction: "top" }).addTo(state.cellLayer);
@@ -529,7 +533,7 @@ function renderCells(cells) {
       notifiedJump.add(c.cell_id);
       notify("⚠ Orage sévère", `Cellule #${c.cell_id} : intensification rapide (jump)`);
     }
-    if (rules.approach && c.eta_strike_minutes != null && c.eta_strike_minutes <= rules.etaMin && !notifiedApproach.has(c.cell_id)) {
+    if (rules.approach && !c.motion_provisional && c.eta_strike_minutes != null && c.eta_strike_minutes <= rules.etaMin && !notifiedApproach.has(c.cell_id)) {
       notifiedApproach.add(c.cell_id);
       notify("🌩 Cellule en approche", `#${c.cell_id} : foudre dans l'anneau dans ~${Math.round(c.eta_strike_minutes)} min`);
     }

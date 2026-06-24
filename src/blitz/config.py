@@ -80,6 +80,10 @@ class AnalysisConfig:
     jump_window_min: float = 2.0         # fenêtre du taux d'éclairs instantané
     strike_ring_km: float = 15.0         # anneau « foudre arrivée » pour l'ETA au bord
     nowcast_horizon_min: float = 30.0    # horizon de la proba de coup sur HOME
+    # ── P4 : a priori de mouvement régional pour les jeunes cellules ───────────
+    regional_motion_prior: bool = True       # ETA provisoire emprunté au consensus régional
+    regional_motion_min_cells: int = 2       # nb mini de cellules établies pour un consensus
+    regional_motion_radius_km: float = 120.0  # une cellule établie doit être sous ce rayon
     # ── Vague 5 : regroupement strokes→flashs + lightning jump canonique (2σ) ──
     flash_dt_s: float = 0.5              # écart temporel max pour regrouper des strokes en un flash
     flash_dd_km: float = 10.0           # écart spatial max pour regrouper des strokes en un flash

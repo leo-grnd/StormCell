@@ -7,7 +7,7 @@ lat = 44.243318  # Mondragon
 lon = 4.716102
 
 [filter]
-max_distance_km = 150
+max_distance_km = 150.0
 max_strikes_shown = 15   # ligne(s) du TUI legacy
 alert_distance_km = 15.0  # alerte sonore frontend si impact sous ce seuil
 
@@ -57,6 +57,10 @@ kf_process_accel = 0.00002   # bruit de process (accélération, km/s²)
 jump_window_min = 2.0        # fenêtre du taux d'éclairs instantané (lightning jump)
 strike_ring_km = 15.0  # anneau « foudre arrivée » pour l'ETA au bord de cellule
 nowcast_horizon_min = 30.0   # horizon de la proba de coup sur HOME
+# P4 : a priori de mouvement régional pour les jeunes cellules (ETA provisoire)
+regional_motion_prior = true       # emprunte le mouvement des cellules voisines établies
+regional_motion_min_cells = 2      # nb mini de cellules établies pour un consensus
+regional_motion_radius_km = 120.0  # une cellule établie doit être sous ce rayon
 # Vague 5 : regroupement strokes→flashs + lightning jump canonique (2σ)
 flash_dt_s = 0.5             # écart temporel max pour regrouper des strokes en un flash
 flash_dd_km = 10.0          # écart spatial max pour regrouper des strokes en un flash
