@@ -158,9 +158,11 @@ class BlitzortungWsWorker:
         self.on_nearby = on_nearby
         self.queue: queue.Queue[Strike] = queue.Queue(maxsize=10_000)
         self._stop = threading.Event()
+        self._reselect = threading.Event()   # force une re-sélection d'endpoint
         self._thread: threading.Thread | None = None
         self._ws = None
         self.endpoint: str | None = None
+        self.reselect_after = 3              # nb d'échecs consécutifs avant re-sélection
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="bt-ws", daemon=True)
@@ -175,6 +177,15 @@ class BlitzortungWsWorker:
             except Exception:
                 pass
         logger.info("Worker Blitzortung WS arrêté")
+
+    def request_reselect(self) -> None:
+        """Force une nouvelle sélection d'endpoint (re-sonde) à la prochaine boucle."""
+        self._reselect.set()
+        if self._ws is not None:
+            try:
+                self._ws.close()   # coupe le flux courant pour rebasculer vite
+            except Exception:
+                pass
 
     def _select_endpoint(self) -> str | None:
         hosts = self.cfg.source.ws_endpoints or ["ws1"]
@@ -195,12 +206,29 @@ class BlitzortungWsWorker:
             logger.error("websocket-client absent : installez-le ou passez [source].type='mqtt'")
             return
         self.endpoint = self._select_endpoint()
+        fails = 0
         while not self._stop.is_set():
+            # Re-sélection à la demande (bouton « re-sonder » en mode 24/7).
+            if self._reselect.is_set():
+                self._reselect.clear()
+                new = self._select_endpoint()
+                if new:
+                    self.endpoint = new
+                fails = 0
             try:
                 self._stream(self.endpoint)
+                fails = 0
             except Exception:
                 if not self._stop.is_set():
-                    logger.warning("Flux Blitzortung interrompu — reconnexion dans 3 s", exc_info=True)
+                    fails += 1
+                    logger.warning("Flux Blitzortung interrompu (échec %d) — reconnexion 3 s", fails, exc_info=True)
+                    # L'endpoint retenu peut être tombé durablement : on re-sonde.
+                    if fails >= self.reselect_after:
+                        logger.warning("Re-sélection d'endpoint après %d échecs consécutifs", fails)
+                        new = self._select_endpoint()
+                        if new:
+                            self.endpoint = new
+                        fails = 0
             if self._stop.is_set():
                 break
             time.sleep(3)

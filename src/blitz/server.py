@@ -47,6 +47,14 @@ class ConfigIn(BaseModel):
     tick_seconds: int | None = None
     strike_ring_km: float | None = None
 
+
+class RetentionIn(BaseModel):
+    days: int
+
+
+class ModeIn(BaseModel):
+    enabled: bool
+
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -115,6 +123,38 @@ class AppContext:
         self.run_id = uuid.uuid4().hex[:12]   # les cell_id repartent à 1 à chaque run
         self._persisted_track_ts: dict[int, float] = {}
         self._open_warnings: set[int] = set()
+        # ── Mode 24/7 : base d'archive dédiée (séparée de la base normale) ────
+        self.archive: Database | None = None
+        self.archive_started_at: float | None = None
+
+    def archive_path(self) -> Path:
+        """Chemin de la base d'archive 24/7 (configurable ; défaut <dossier db>/24-7/archive.db)."""
+        custom = (self.config.ops.archive_path or "").strip()
+        if custom:
+            return Path(custom)
+        return Path(self.config.db.path).resolve().parent / "24-7" / "archive.db"
+
+    def set_continuous(self, enabled: bool) -> None:
+        """Active/désactive le mode 24/7 : ouvre (ou ferme) la base d'archive dédiée.
+
+        L'archive n'a JAMAIS de rétention → elle n'est pas affectée par les purges de
+        la base normale. La capture y est dupliquée tant que le mode est actif.
+        """
+        self.config.ops.continuous_mode = bool(enabled)
+        if enabled and self.archive is None:
+            path = self.archive_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.archive = Database(path)   # retention_days=0 → jamais purgée
+            self.archive_started_at = time.time()
+            logger.info("Mode 24/7 ON — archive ouverte : %s", path)
+        elif not enabled and self.archive is not None:
+            try:
+                self.archive.close()
+            except Exception:
+                logger.exception("Erreur à la fermeture de l'archive 24/7")
+            self.archive = None
+            self.archive_started_at = None
+            logger.info("Mode 24/7 OFF — archive fermée")
 
     def live_stats(self) -> dict:
         """Snapshot des stats enrichi des métriques de débit de la queue de diffusion."""
@@ -126,17 +166,21 @@ class AppContext:
         return snap
 
     def on_nearby(self, s: Strike) -> None:
-        """Listener appelé par le worker MQTT pour chaque impact dans la zone."""
-        self.db.insert_strike(
-            ts_unix=s.ts_unix,
-            lat=s.lat,
-            lon=s.lon,
-            distance_km=s.distance_km,
-            bearing_deg=s.bearing_deg,
-            mds=s.mds,
-            home_lat=self.config.home.lat,
-            home_lon=self.config.home.lon,
-        )
+        """Listener appelé par le worker pour chaque impact dans la zone.
+        Écrit en base normale et, si le mode 24/7 est actif, aussi dans l'archive."""
+        for db in (self.db, self.archive):
+            if db is None:
+                continue
+            db.insert_strike(
+                ts_unix=s.ts_unix,
+                lat=s.lat,
+                lon=s.lon,
+                distance_km=s.distance_km,
+                bearing_deg=s.bearing_deg,
+                mds=s.mds,
+                home_lat=self.config.home.lat,
+                home_lon=self.config.home.lon,
+            )
         with self.state.lock:
             self.state.stats["logged_session"] += 1
             self.state.stats["logged_total"] += 1
@@ -180,7 +224,11 @@ def create_app(config: Config) -> FastAPI:
         """
         loop = asyncio.get_running_loop()
         while True:
-            await asyncio.sleep(config.analysis.tick_seconds)
+            # Cadence stable et robuste aux tics rapides (3 s) : on chronomètre le cycle
+            # et on dort le *reste* du tick. Comme la boucle est séquentielle (await), un
+            # recalcul lent ne s'empile jamais ; on garde au moins 0.2 s de répit pour
+            # toujours rendre la main même si un tick dépasse l'intervalle.
+            cycle_start = loop.time()
             try:
                 with ctx.state.lock:
                     recent = list(ctx.state.recent)
@@ -210,6 +258,8 @@ def create_app(config: Config) -> FastAPI:
                 await run_in_threadpool(_persist_and_predict, cells)
             except Exception:
                 logger.exception("Erreur dans la boucle d'analyse")
+            elapsed = loop.time() - cycle_start
+            await asyncio.sleep(max(0.2, config.analysis.tick_seconds - elapsed))
 
     def _persist_and_predict(cells: dict) -> None:
         """Écrit les cellules/trajectoires en DB et journalise les nouvelles alertes."""
@@ -241,10 +291,17 @@ def create_app(config: Config) -> FastAPI:
                         "prob": prob, "closest": cd.get("closest_approach_km"),
                     })
 
-        ctx.db.upsert_cells(ctx.run_id, live_dicts)
-        ctx.db.insert_cell_tracks(ctx.run_id, track_rows)
-        ctx.db.log_predictions(new_preds)
+        for db in (ctx.db, ctx.archive):
+            if db is None:
+                continue
+            db.upsert_cells(ctx.run_id, live_dicts)
+            db.insert_cell_tracks(ctx.run_id, track_rows)
+            db.log_predictions(new_preds)
         ctx._open_warnings = current_warn
+        # Purge du registre de timestamps (évite la croissance sur un run très long en 24/7).
+        ctx._persisted_track_ts = {
+            cid: ts for cid, ts in ctx._persisted_track_ts.items() if cid in cells
+        }
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -253,6 +310,9 @@ def create_app(config: Config) -> FastAPI:
         else:
             ctx.worker = BlitzortungWsWorker(config, ctx.state, on_nearby=ctx.on_nearby)
         ctx.worker.start()
+        # Reprise du mode 24/7 s'il était actif → l'archive se rouvre seule au démarrage.
+        if config.ops.continuous_mode:
+            ctx.set_continuous(True)
         pump_task = asyncio.create_task(mqtt_pump(), name="mqtt_pump")
         cells_task = asyncio.create_task(cells_loop(), name="cells_loop")
         try:
@@ -267,6 +327,8 @@ def create_app(config: Config) -> FastAPI:
                     pass
             if ctx.worker is not None:
                 ctx.worker.stop()
+            if ctx.archive is not None:
+                ctx.archive.close()
             ctx.db.close()
 
     app = FastAPI(title="Blitzortung Monitor", version="0.2.0", lifespan=lifespan)
@@ -298,6 +360,10 @@ def create_app(config: Config) -> FastAPI:
     async def how_it_works() -> HTMLResponse:
         return _serve_html("how-it-works.html", ("how-it-works.css", "how-it-works.js", "style.css"))
 
+    @app.get("/ops", include_in_schema=False)
+    async def ops_page() -> HTMLResponse:
+        return _serve_html("ops.html", ("ops.css", "ops.js", "style.css"))
+
     # ── API REST ────────────────────────────────────────────────────────────
     @app.get("/api/stats")
     async def get_stats() -> dict:
@@ -308,6 +374,7 @@ def create_app(config: Config) -> FastAPI:
         snap["server_time"] = time.time()
         snap["run_id"] = ctx.run_id
         snap["source_type"] = config.source.type
+        snap["continuous_mode"] = config.ops.continuous_mode
         snap["probe_est_s"] = (
             len(config.source.ws_endpoints) * config.source.ws_probe_seconds
             if config.source.type == "blitzortung_ws" else 2
@@ -582,6 +649,85 @@ def create_app(config: Config) -> FastAPI:
 
         persisted = await run_in_threadpool(update_config, config.source_path, sv) if sv else False
         return {"ok": True, "persisted": persisted, "config": _config_snapshot()}
+
+    # ── Mode 24/7 : supervision & contrôles ──────────────────────────────────
+    @app.get("/api/ops/status")
+    async def ops_status() -> dict:
+        snap = ctx.live_stats()
+        storage = await run_in_threadpool(ctx.db.storage_info)
+        cap24 = await run_in_threadpool(ctx.db.count_range, time.time() - 86400, None, None, None)
+        archive: dict = {"active": ctx.archive is not None, "path": str(ctx.archive_path())}
+        if ctx.archive is not None:
+            a_store = await run_in_threadpool(ctx.archive.storage_info)
+            archive["db_bytes"] = a_store["db_bytes"]
+            archive["wal_bytes"] = a_store["wal_bytes"]
+            archive["total"] = await run_in_threadpool(ctx.archive.count)
+            archive["started_at"] = ctx.archive_started_at
+        return {
+            "archive": archive,
+            "continuous_mode": config.ops.continuous_mode,
+            "source": snap.get("source"), "source_type": config.source.type,
+            "endpoint": getattr(ctx.worker, "endpoint", None),
+            "latency_s": snap.get("latency_s"),
+            "started_at": snap.get("started_at"), "server_time": time.time(),
+            "last_message_at": snap.get("last_message_at"),
+            "mqtt_connected": snap.get("mqtt_connected"),
+            "world_per_s": snap.get("world_per_s"), "nearby_per_min": snap.get("nearby_per_min"),
+            "queue_dropped": snap.get("queue_dropped"),
+            "queue_depth": snap.get("queue_depth"), "queue_max": snap.get("queue_max"),
+            "cells_count": snap.get("cells_count"), "cells_compute_ms": snap.get("cells_compute_ms"),
+            "recent_buffer": snap.get("recent_buffer"), "recent_buffer_max": snap.get("recent_buffer_max"),
+            "logged_total": snap.get("logged_total"), "logged_session": snap.get("logged_session"),
+            "capture_24h": cap24,
+            "retention_days": ctx.db.retention_days,
+            "storage": storage,
+            "can_reprobe": hasattr(ctx.worker, "request_reselect"),
+        }
+
+    @app.post("/api/ops/mode")
+    async def ops_mode(m: ModeIn) -> dict:
+        ctx.set_continuous(m.enabled)   # ouvre/ferme l'archive 24/7 dédiée
+        persisted = await run_in_threadpool(
+            update_config, config.source_path, {"ops": {"continuous_mode": config.ops.continuous_mode}}
+        )
+        return {
+            "ok": True, "continuous_mode": config.ops.continuous_mode,
+            "persisted": persisted, "archive_path": str(ctx.archive_path()),
+        }
+
+    @app.post("/api/ops/retention")
+    async def ops_retention(r: RetentionIn) -> dict:
+        days = max(0, int(r.days))
+        ctx.db.retention_days = days
+        persisted = await run_in_threadpool(
+            update_config, config.source_path, {"db": {"retention_days": days}}
+        )
+        return {"ok": True, "retention_days": days, "persisted": persisted}
+
+    @app.post("/api/ops/reprobe")
+    async def ops_reprobe() -> dict:
+        w = ctx.worker
+        if w is not None and hasattr(w, "request_reselect"):
+            w.request_reselect()
+            return {"ok": True, "message": "Re-sélection d'endpoint demandée"}
+        return {"ok": False, "message": "Indisponible pour cette source"}
+
+    @app.post("/api/ops/maintain")
+    async def ops_maintain() -> dict:
+        res = await run_in_threadpool(ctx.db.maintain)
+        return {"ok": True, **res}
+
+    @app.post("/api/ops/backup")
+    async def ops_backup() -> dict:
+        stem = Path(config.db.path)
+        dest = stem.with_name(f"{stem.stem}_backup_{int(time.time())}.db")
+        if dest.exists():
+            raise HTTPException(status_code=409, detail="Une sauvegarde de cet horodatage existe déjà")
+        try:
+            size = await run_in_threadpool(ctx.db.backup, str(dest))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Échec de la sauvegarde : {exc}") from None
+        return {"ok": True, "path": str(dest), "bytes": size}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

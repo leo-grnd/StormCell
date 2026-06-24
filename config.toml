@@ -69,6 +69,9 @@ jump_dfrdt_lookback_s = 120 # fenêtre de la dérivée du taux (DFRDT, ≈ 2 min
 jump_sigma_window_s = 720   # fenêtre d'estimation de σ du bruit (≈ 12 min)
 jump_sigma_mult = 2.0       # seuil en σ (canonique = 2)
 
+[ops]
+continuous_mode = false  # « Mode 24/7 » (supervision continue) — piloté depuis /ops
+
 [predict]
 min_probability = 0.3       # proba minimale pour journaliser une prédiction (vérification)
 verify_tolerance_min = 10   # fenêtre d'appariement prédiction ↔ arrivée réelle (min)

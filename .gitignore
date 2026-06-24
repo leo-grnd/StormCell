@@ -19,6 +19,7 @@ env/
 *.db-wal
 *.db-shm
 *.log
+24-7/            # archive du mode 24/7 (base dédiée)
 
 # ─── IDE / OS / outils ───────────────────────────────────────────────────────
 .idea/

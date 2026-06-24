@@ -674,6 +674,10 @@ function updateStats(s) {
     }
   }
 
+  // Badge « REC 24/7 » dans le header si le mode d'archivage continu est actif.
+  const recBadge = $("#rec-badge");
+  if (recBadge) recBadge.hidden = !s.continuous_mode;
+
   // Diagnostics système (débit, tampon, file de diffusion, coût du recalcul).
   if (s.cells_compute_ms != null) setText("#sys-calc", `${s.cells_compute_ms} ms`);
   setText("#sys-wps", s.world_per_s != null ? s.world_per_s.toFixed(0) : "—");

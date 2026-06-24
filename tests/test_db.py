@@ -147,6 +147,28 @@ class MaintenanceTests(_DbCase):
         self.assertTrue(res["checkpointed"])
         self.assertEqual(res["deleted"], 0)   # retention_days=0 → aucune purge
 
+    def test_storage_info(self):
+        self._add(4)
+        info = self.db.storage_info()
+        self.assertIn("db_bytes", info)
+        self.assertIn("wal_bytes", info)
+        self.assertGreaterEqual(info["db_bytes"], 0)
+        self.assertGreaterEqual(info["disk"]["total"], 0)
+
+    def test_backup_roundtrip(self):
+        import sqlite3
+        self._add(5)
+        dest = Path(str(self.path) + ".bak")
+        if dest.exists():
+            dest.unlink()
+        n = self.db.backup(str(dest))
+        self.assertGreater(n, 0)
+        conn = sqlite3.connect(str(dest))
+        cnt = conn.execute("SELECT COUNT(*) FROM strikes").fetchone()[0]
+        conn.close()
+        dest.unlink()
+        self.assertEqual(cnt, 5)   # la sauvegarde contient bien les impacts
+
 
 if __name__ == "__main__":
     unittest.main()

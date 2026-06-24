@@ -84,6 +84,9 @@
   </nav>
 
   <div class="status">
+    <a href="/ops" id="rec-badge" class="rec-badge" title="Enregistrement 24/7 actif — voir la supervision" hidden>
+      <span class="rec-dot"></span> REC 24/7
+    </a>
     <div class="live-pill">
       <span id="mqtt-dot" class="dot dot-red"></span>
       <span id="mqtt-text">…</span>
@@ -92,6 +95,7 @@
     </div>
     <button id="tz-toggle" class="ctrl-btn">Local</button>
     <a href="/how-it-works" class="ctrl-btn" title="Comment ça marche — fonctionnement du système" style="text-decoration:none">Comment ça marche</a>
+    <a href="/ops" class="ctrl-btn" title="Mode 24/7 — supervision continue" style="text-decoration:none">24/7</a>
     <button id="theme-toggle" class="ctrl-btn" title="Basculer thème clair / sombre" aria-label="Basculer le thème">
       <svg class="ic theme-ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1.5 12h3M19.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
       <svg class="ic theme-ic-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>

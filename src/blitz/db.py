@@ -12,6 +12,7 @@ secondes (thread flusher), au lieu d'un `commit` par impact dans le thread MQTT.
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 import threading
 import time
@@ -227,6 +228,40 @@ class Database:
                 except sqlite3.Error:
                     logger.exception("Erreur VACUUM")
         return result
+
+    # ── supervision 24/7 : taille de la base, disque, sauvegarde à chaud ──────
+    def storage_info(self) -> dict[str, Any]:
+        """Taille de la base (+ WAL/SHM) et occupation du disque hôte."""
+        self.flush()
+
+        def fsize(p: str) -> int:
+            try:
+                return Path(p).stat().st_size
+            except OSError:
+                return 0
+
+        db_b = fsize(str(self.path))
+        wal_b = fsize(str(self.path) + "-wal") + fsize(str(self.path) + "-shm")
+        target = self.path.resolve().parent
+        if not target.exists():
+            target = Path(".").resolve()
+        try:
+            du = shutil.disk_usage(str(target))
+            disk = {"total": du.total, "used": du.used, "free": du.free}
+        except OSError:
+            disk = {"total": 0, "used": 0, "free": 0}
+        return {"db_bytes": db_b, "wal_bytes": wal_b, "disk": disk}
+
+    def backup(self, dest: str) -> int:
+        """Sauvegarde cohérente à chaud via `VACUUM INTO` (sans interrompre la capture).
+        Renvoie la taille du fichier produit."""
+        with self._lock:
+            self._flush_locked()
+            self.conn.execute("VACUUM INTO ?", (dest,))
+        try:
+            return Path(dest).stat().st_size
+        except OSError:
+            return 0
 
     def _maint_loop(self) -> None:
         while not self._closed:

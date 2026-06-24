@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Mode 24/7 — StormCell</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  (function () {
+    try { var t = localStorage.getItem("sc-theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/ops.css">
+<script defer src="/static/ops.js"></script>
+</head>
+<body>
+
+<div class="ops-top">
+  <a class="brand" href="/">
+    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg></span>
+    <b>StormCell</b><span class="tag">24/7</span>
+  </a>
+  <div class="spacer"></div>
+  <a class="back" href="/">← Ouvrir l'application</a>
+  <button id="theme-toggle" class="ctrl-btn" title="Thème clair / sombre" aria-label="Basculer le thème">
+    <svg class="ic theme-ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1.5 12h3M19.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+    <svg class="ic theme-ic-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  </button>
+</div>
+
+<div class="ops-wrap">
+  <div class="ops-hero">
+    <h1>Mode 24/7 — supervision</h1>
+    <p>Faites tourner StormCell en continu pour tout capturer. Cette page surveille le flux, la
+      base et le disque en direct, et pilote la robustesse (re-sélection de serveur, rétention,
+      maintenance, sauvegarde). La capture est <b>indépendante du navigateur</b> : une fois le
+      serveur lancé, tout est enregistré même cette page fermée.</p>
+  </div>
+
+  <!-- interrupteur maître -->
+  <div class="master" id="master">
+    <div class="m-ic">⚡</div>
+    <div class="m-tx">
+      <b>Mode 24/7</b>
+      <span id="master-sub">Active la supervision continue et révèle les consignes de service.</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="mode-toggle">
+      <span class="track"></span>
+      <span class="lab" id="mode-lab">—</span>
+    </label>
+  </div>
+
+  <!-- bannière d'enregistrement (visible seulement en mode 24/7) -->
+  <div class="rec-banner" id="rec-banner" hidden>
+    <span class="rec-dot"></span>
+    <div class="rec-tx">
+      <b>Enregistrement 24/7 actif</b>
+      <span id="rec-sub">archivage dans une base dédiée…</span>
+    </div>
+    <span class="rec-count mono" id="rec-count">—</span>
+  </div>
+
+  <!-- santé -->
+  <div class="ops-sec-t">État en direct</div>
+  <div class="ops-grid">
+    <div class="ops-card archive-card" id="card-archive">
+      <div class="lbl"><span class="rec-dot sm" id="arch-dot"></span> Archive 24/7</div>
+      <div class="val" id="c-arch">—</div>
+      <div class="sub" id="c-arch-sub">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl"><span class="dot" id="flux-dot"></span> Flux</div>
+      <div class="val" id="c-flux">—</div>
+      <div class="sub" id="c-flux-sub">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Capture (24 h)</div>
+      <div class="val" id="c-cap24">—</div>
+      <div class="sub" id="c-captot">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Base de données</div>
+      <div class="val" id="c-db">—</div>
+      <div class="sub" id="c-wal">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Disque</div>
+      <div class="val" id="c-disk">—</div>
+      <div class="bar"><i id="disk-bar"></i></div>
+      <div class="sub" id="c-disk-sub">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Débit</div>
+      <div class="val" id="c-rate">—</div>
+      <div class="sub" id="c-rate-sub">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Cellules vives</div>
+      <div class="val" id="c-cells">—</div>
+      <div class="sub" id="c-calc">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Disponibilité</div>
+      <div class="val" id="c-uptime">—</div>
+      <div class="sub" id="c-run">—</div>
+    </div>
+    <div class="ops-card">
+      <div class="lbl">Rétention</div>
+      <div class="val" id="c-ret">—</div>
+      <div class="sub">purge des données anciennes</div>
+    </div>
+  </div>
+
+  <!-- contrôles -->
+  <div class="ops-sec-t">Contrôles</div>
+  <div class="ops-controls">
+    <div class="ops-row">
+      <div class="field">
+        <label>Rétention (jours, 0 = illimité)</label>
+        <input type="number" id="ret-days" min="0" step="1" value="0">
+      </div>
+      <button class="btn" id="btn-ret">Appliquer la rétention</button>
+    </div>
+    <div class="ops-actions">
+      <button class="btn ghost" id="btn-reprobe">Re-sonder les serveurs</button>
+      <button class="btn ghost" id="btn-maintain">Maintenance (checkpoint + optimize)</button>
+      <button class="btn ghost" id="btn-backup">Sauvegarder la base</button>
+    </div>
+    <div class="ops-note">
+      « Re-sonder » force la re-sélection du serveur Blitzortung le plus rapide (utile si la latence
+      dérive). « Sauvegarder » écrit une copie cohérente <code>VACUUM INTO</code> à côté de la base,
+      sans interrompre la capture.
+    </div>
+    <div class="ops-result" id="ops-result"></div>
+  </div>
+
+  <!-- supervision OS -->
+  <div class="ops-sec-t">Lancer au démarrage &amp; redémarrage automatique</div>
+  <div class="ops-controls ops-superv">
+    <p>Le redémarrage automatique du processus se règle au niveau du système d'exploitation —
+      cette page ne peut pas le faire à votre place. Choisissez une méthode :</p>
+    <div class="tabs2">
+      <button class="active" data-sup="docker">Docker</button>
+      <button data-sup="nssm">Service Windows (NSSM)</button>
+      <button data-sup="watchdog">Watchdog</button>
+    </div>
+    <pre class="ops-pre" id="sup-docker"><span class="c"># docker-compose.yml — redémarre tant que vous ne l'arrêtez pas</span>
+services:
+  stormcell:
+    build: .
+    restart: unless-stopped
+    ports: ["8000:8000"]
+    volumes:
+      - ./data:/app/data        <span class="c"># la base et les logs survivent aux redémarrages</span>
+    environment:
+      - BLITZ_DB=/app/data/lightning_log.db
+
+<span class="c"># puis :</span>  docker compose up -d</pre>
+    <pre class="ops-pre" id="sup-nssm" style="display:none"><span class="c"># NSSM — installe StormCell comme service Windows (auto-restart + démarrage au boot)</span>
+nssm install StormCell "C:\chemin\.venv\Scripts\python.exe" "-m blitz web"
+nssm set StormCell AppDirectory "Z:\Projets\StormCell"
+nssm set StormCell AppExit Default Restart
+nssm set StormCell Start SERVICE_AUTO_START
+nssm start StormCell</pre>
+    <pre class="ops-pre" id="sup-watchdog" style="display:none"><span class="c"># Watchdog — relance si le flux est mort depuis &gt; 5 min (PowerShell, tâche planifiée /5 min)</span>
+$s = Invoke-RestMethod http://127.0.0.1:8000/api/ops/status
+$age = (Get-Date -UFormat %s) - $s.last_message_at
+if ($age -gt 300) {
+  Restart-Service StormCell        <span class="c"># ou: docker compose restart stormcell</span>
+}</pre>
+    <p class="ops-note" style="margin-top:0">À surveiller pour du vrai 24/7 : l'espace disque
+      (carte « Disque » ci-dessus), et le fait de ne lancer <b>qu'une seule</b> instance sur la même
+      base de données.</p>
+  </div>
+</div>
+
+</body>
+</html>

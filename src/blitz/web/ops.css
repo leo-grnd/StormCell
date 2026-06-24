@@ -1,0 +1,108 @@
+/* ============================================================================
+   ops.css — page « Mode 24/7 » (supervision). Réutilise les variables de style.css.
+   ========================================================================== */
+html { overflow: auto; height: auto; }
+body { display: block; overflow: auto; height: auto; background: var(--bg); }
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--bg-grad); }
+
+.ops-top {
+  position: sticky; top: 0; z-index: 50; display: flex; align-items: center; gap: 16px;
+  height: 56px; padding: 0 22px; background: var(--header-grad);
+  border-bottom: 1px solid var(--line); backdrop-filter: blur(8px);
+}
+.ops-top .brand { display: flex; align-items: center; gap: 11px; text-decoration: none; color: var(--text); }
+.ops-top .brand-mark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  background: linear-gradient(155deg, #1c2941, #0e1726); border: 1px solid #2b3c58; color: var(--brand-hi); }
+.ops-top .brand-mark svg { width: 16px; height: 16px; }
+.ops-top .brand b { font-weight: 600; font-size: 15px; }
+.ops-top .tag { font-family: var(--mono); font-size: 9px; letter-spacing: .16em; color: var(--brand);
+  border: 1px solid var(--brand-dim); padding: 2px 6px 1px; border-radius: 4px; background: rgba(90,162,255,.07); }
+.ops-top .spacer { flex: 1; }
+.ops-top a.back { font-size: 13px; color: var(--text-dim); text-decoration: none; }
+.ops-top a.back:hover { color: var(--text); }
+
+.ops-wrap { max-width: 1080px; margin: 0 auto; padding: 26px 24px 90px; }
+.ops-hero h1 { font-size: 27px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 8px; }
+.ops-hero p { font-size: 14.5px; line-height: 1.6; color: var(--text-dim); max-width: 76ch; margin: 0; }
+
+/* interrupteur maître 24/7 */
+.master { display: flex; align-items: center; gap: 16px; margin: 22px 0 8px;
+  background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 16px 20px; box-shadow: var(--shadow-1); }
+.master.on { border-color: var(--brand-dim); box-shadow: 0 0 0 1px var(--brand-dim), 0 0 28px -10px var(--brand-glow); }
+.master .m-ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; flex: none;
+  background: var(--surface-3); color: var(--text-faint); font-size: 20px; transition: all .2s; }
+.master.on .m-ic { background: rgba(90,162,255,.14); color: var(--brand-hi); }
+.master .m-tx { flex: 1; }
+.master .m-tx b { font-size: 15px; }
+.master .m-tx span { display: block; font-size: 12.5px; color: var(--text-faint); margin-top: 2px; }
+.master .switch .lab { font-family: var(--mono); font-size: 12px; color: var(--text-dim); min-width: 64px; }
+
+/* bannière d'enregistrement 24/7 (effet « ressenti ») */
+.rec-banner {
+  display: flex; align-items: center; gap: 14px; margin: 12px 0 4px;
+  padding: 13px 18px; border-radius: var(--r-md);
+  background: linear-gradient(100deg, rgba(248,81,73,.16), rgba(248,81,73,.05));
+  border: 1px solid rgba(248,81,73,.45);
+  box-shadow: 0 0 0 1px rgba(248,81,73,.15), 0 0 30px -10px rgba(248,81,73,.5);
+  animation: recIn .35s ease;
+}
+.rec-banner[hidden] { display: none; }
+@keyframes recIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.rec-banner .rec-tx { flex: 1; }
+.rec-banner .rec-tx b { font-size: 14px; color: var(--sev5); letter-spacing: .01em; }
+.rec-banner .rec-tx span { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; font-family: var(--mono); }
+.rec-count { font-size: 20px; font-weight: 600; color: var(--sev5); font-feature-settings: "tnum" 1; }
+.rec-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--sev5); flex: none;
+  box-shadow: 0 0 0 0 rgba(248,81,73,.6); animation: recPulse 1.4s ease-out infinite; }
+.rec-dot.sm { width: 8px; height: 8px; }
+@keyframes recPulse {
+  0% { box-shadow: 0 0 0 0 rgba(248,81,73,.55); }
+  70% { box-shadow: 0 0 0 8px rgba(248,81,73,0); }
+  100% { box-shadow: 0 0 0 0 rgba(248,81,73,0); }
+}
+/* quand l'archive est active, sa carte se distingue */
+.archive-card.live { border-color: rgba(248,81,73,.4); background: linear-gradient(160deg, rgba(248,81,73,.07), var(--surface-1)); }
+.archive-card .rec-dot.sm { opacity: .35; }
+.archive-card.live .rec-dot.sm { opacity: 1; }
+/* accent global de page en mode 24/7 */
+body.rec-on .ops-top { box-shadow: inset 0 -2px 0 rgba(248,81,73,.55); }
+
+/* grille de cartes de santé */
+.ops-sec-t { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint);
+  font-weight: 600; margin: 28px 2px 12px; }
+.ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(212px, 1fr)); gap: 12px; }
+.ops-card { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 13px 15px; position: relative; overflow: hidden; }
+.ops-card .lbl { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint);
+  display: flex; align-items: center; gap: 7px; }
+.ops-card .val { font-family: var(--mono); font-size: 22px; font-weight: 500; color: var(--text); margin-top: 5px; line-height: 1.1; font-feature-settings: "tnum" 1; }
+.ops-card .val small { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+.ops-card .sub { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+.ops-card .val.ok { color: var(--sev0); } .ops-card .val.warn { color: var(--sev2); } .ops-card .val.crit { color: var(--sev5); }
+
+.bar { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; margin-top: 8px; }
+.bar > i { display: block; height: 100%; border-radius: 4px; background: var(--sev0); transition: width .4s, background .4s; }
+
+/* contrôles */
+.ops-controls { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 18px 20px; margin-top: 12px; }
+.ops-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 18px; }
+.ops-row .field input { width: 110px; }
+.ops-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.ops-note { font-size: 12px; color: var(--text-faint); margin-top: 10px; line-height: 1.55; }
+.ops-result { font-family: var(--mono); font-size: 12.5px; margin-top: 12px; min-height: 18px; color: var(--text-mono); }
+.ops-result.ok { color: var(--sev0); } .ops-result.err { color: var(--sev5); }
+
+/* supervision (instructions OS) */
+.ops-superv { margin-top: 12px; }
+.ops-superv h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.ops-superv p { font-size: 13.5px; line-height: 1.6; color: var(--text-dim); margin: 0 0 12px; max-width: 80ch; }
+.ops-pre { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12px; color: var(--text-mono);
+  line-height: 1.6; white-space: pre; margin: 0 0 16px; }
+.ops-pre .c { color: var(--text-faint); }
+.ops-superv .tabs2 { display: flex; gap: 6px; margin-bottom: 10px; }
+.ops-superv .tabs2 button { font: inherit; font-size: 12.5px; cursor: pointer; background: var(--surface-3);
+  color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 12px; }
+.ops-superv .tabs2 button.active { color: var(--brand-hi); border-color: var(--brand-dim); background: rgba(90,162,255,.1); }
