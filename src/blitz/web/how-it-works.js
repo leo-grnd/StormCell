@@ -56,10 +56,14 @@ const CLUSTER_COLORS = () => [cssVar("--brand"), cssVar("--sev0"), cssVar("--sev
 
 function fitCanvas(cv) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const cssW = cv.clientWidth || cv.parentElement.clientWidth;
-  const cssH = parseInt(cv.getAttribute("height"), 10) || 280;
-  cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+  // Hauteur logique figée une seule fois : on NE doit PAS relire l'attribut `height`
+  // ensuite, car cv.width/cv.height le réécrivent (×dpr) → sinon emballement infini.
+  if (!cv.dataset.baseH) cv.dataset.baseH = String(parseInt(cv.getAttribute("height"), 10) || 280);
+  const cssH = parseInt(cv.dataset.baseH, 10);
+  const cssW = cv.clientWidth || cv.parentElement.clientWidth || 600;
   cv.style.height = cssH + "px";
+  cv.width = Math.round(cssW * dpr);
+  cv.height = Math.round(cssH * dpr);
   const ctx = cv.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { ctx, w: cssW, h: cssH };
