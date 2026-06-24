@@ -581,6 +581,16 @@ if (tzBtn) tzBtn.addEventListener("click", () => {
   refreshTzBtn();
 });
 
+// ── Thème clair / sombre ──────────────────────────────────────────────────────
+// L'init (anti-flash) est faite par le script inline du <head> ; ici on persiste
+// et on bascule au clic. Sombre par défaut si rien n'est enregistré.
+const themeBtn = $("#theme-toggle");
+if (themeBtn) themeBtn.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("sc-theme", next); } catch { /* */ }
+});
+
 let _audioCtx = null;
 function ensureAudio() {
   if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
