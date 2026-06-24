@@ -276,23 +276,27 @@ def create_app(config: Config) -> FastAPI:
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
-    @app.get("/", include_in_schema=False)
-    async def index() -> HTMLResponse:
-        path = WEB_DIR / "index.html"
+    def _serve_html(filename: str, assets: tuple[str, ...]) -> HTMLResponse:
+        path = WEB_DIR / filename
         if not path.exists():
-            raise HTTPException(status_code=404, detail="Frontend introuvable")
+            raise HTTPException(status_code=404, detail="Page introuvable")
         html = path.read_text(encoding="utf-8")
         # Cache-busting : on suffixe les assets locaux d'un querystring basé sur leur mtime,
         # pour que le navigateur recharge automatiquement après chaque édition.
-        for asset in ("app.js", "style.css"):
+        for asset in assets:
             apath = WEB_DIR / asset
             if apath.exists():
                 v = int(apath.stat().st_mtime)
                 html = html.replace(f"/static/{asset}", f"/static/{asset}?v={v}")
-        return HTMLResponse(
-            content=html,
-            headers={"Cache-Control": "no-store, must-revalidate"},
-        )
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> HTMLResponse:
+        return _serve_html("index.html", ("app.js", "style.css"))
+
+    @app.get("/how-it-works", include_in_schema=False)
+    async def how_it_works() -> HTMLResponse:
+        return _serve_html("how-it-works.html", ("how-it-works.css", "how-it-works.js", "style.css"))
 
     # ── API REST ────────────────────────────────────────────────────────────
     @app.get("/api/stats")

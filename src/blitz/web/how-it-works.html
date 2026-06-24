@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Comment ça marche — StormCell</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  (function () {
+    try { var t = localStorage.getItem("sc-theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/how-it-works.css">
+<script defer src="/static/how-it-works.js"></script>
+</head>
+<body>
+
+<div class="doc-top">
+  <a class="brand" href="/">
+    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg></span>
+    <b>StormCell</b><span class="tag">NOWCAST</span>
+  </a>
+  <div class="spacer"></div>
+  <a class="back" href="/">← Ouvrir l'application</a>
+  <button id="theme-toggle" class="ctrl-btn" title="Thème clair / sombre" aria-label="Basculer le thème">
+    <svg class="ic theme-ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1.5 12h3M19.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+    <svg class="ic theme-ic-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  </button>
+</div>
+
+<div class="doc-wrap">
+  <!-- ── Sommaire ─────────────────────────────────────────────────────────── -->
+  <aside class="doc-toc" id="toc">
+    <div class="toc-title">Sommaire</div>
+    <a href="#apercu">Vue d'ensemble</a>
+    <a href="#source">1 · Source &amp; latence</a>
+    <a href="#source-net" class="sub">Réseau &amp; localisation TOA</a>
+    <a href="#source-ws" class="sub">WebSocket &amp; décodage</a>
+    <a href="#source-ring" class="sub">Bornage à l'anneau</a>
+    <a href="#detection">2 · Détection des cellules</a>
+    <a href="#det-dbscan" class="sub">DBSCAN haversine</a>
+    <a href="#det-grid" class="sub">Micro-clustering grille</a>
+    <a href="#det-demo" class="sub">Démo interactive</a>
+    <a href="#suivi">3 · Suivi des cellules</a>
+    <a href="#suivi-assoc" class="sub">Association hongroise</a>
+    <a href="#suivi-kalman" class="sub">Filtre de Kalman</a>
+    <a href="#suivi-lineage" class="sub">Split / merge</a>
+    <a href="#nowcast">4 · Nowcast &amp; sévérité</a>
+    <a href="#now-flash" class="sub">Strokes → flashs</a>
+    <a href="#now-jump" class="sub">Lightning jump 2σ</a>
+    <a href="#now-eta" class="sub">ETA &amp; probabilité</a>
+    <a href="#now-sev" class="sub">Indice de sévérité</a>
+    <a href="#preuve">5 · Preuve &amp; performance</a>
+    <a href="#preuve-verif" class="sub">Vérification POD/FAR/CSI</a>
+    <a href="#preuve-perf" class="sub">Persistance &amp; perfs</a>
+    <a href="#limites">Limites &amp; honnêteté</a>
+    <a href="#glossaire">Glossaire</a>
+  </aside>
+
+  <main class="doc-main">
+    <!-- ── Hero ───────────────────────────────────────────────────────────── -->
+    <div class="doc-hero">
+      <h1>Comment fonctionne <span class="accent">StormCell</span>, de l'éclair au préavis</h1>
+      <p class="lead">
+        StormCell transforme un flux brut d'impacts de foudre en un <strong>nowcast</strong> :
+        détection des cellules orageuses, suivi de leur trajectoire, estimation de leur
+        vitesse et de leur heure d'arrivée, et alerte avant que la foudre n'atteigne votre
+        position. Cette page détaille chaque étage du pipeline — les algorithmes, les formules
+        exactes utilisées dans le code, et trois démonstrations interactives pour
+        <em>voir</em> la mécanique en action.
+      </p>
+      <div class="chips">
+        <span class="chip">Blitzortung WS</span><span class="chip">DBSCAN haversine</span>
+        <span class="chip">Filtre de Kalman</span><span class="chip">Lightning jump 2σ</span>
+        <span class="chip">Nowcast probabiliste</span><span class="chip">FastAPI · asyncio</span>
+        <span class="chip">SQLite</span>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════ APERÇU ════════════════════════════════ -->
+    <section class="doc-sec" id="apercu">
+      <h2><span class="num">00</span>Vue d'ensemble</h2>
+      <div class="sec-title">Un pipeline temps réel, de bout en bout</div>
+      <div class="prose">
+        <p>
+          Le système est une chaîne de traitements qui tourne en continu. Un <strong>worker</strong>
+          en arrière-plan reçoit les impacts du réseau Blitzortung et les pousse dans une file ;
+          la boucle <code>asyncio</code> les diffuse instantanément aux navigateurs connectés par
+          WebSocket, tandis qu'une boucle d'analyse recalcule l'état des cellules orageuses à
+          intervalle régulier (le « tick », 7 s par défaut). Tout le calcul lourd
+          (clustering, suivi) s'exécute dans un <em>thread pool</em> pour ne jamais bloquer les
+          WebSockets.
+        </p>
+      </div>
+
+      <div class="pipe-wrap">
+        <svg viewBox="0 0 960 340" role="img" aria-label="Schéma du pipeline StormCell">
+          <defs>
+            <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+              <path d="M0 0L8 4L0 8z" fill="var(--brand)"/>
+            </marker>
+          </defs>
+          <style>
+            .pb{fill:var(--surface-3);stroke:var(--line-hi);stroke-width:1;rx:9;}
+            .pt{fill:var(--text);font:600 13px var(--sans);}
+            .ps{fill:var(--text-faint);font:11px var(--mono);}
+            .pl{stroke:var(--brand);stroke-width:1.6;fill:none;marker-end:url(#ar);}
+            .pg{fill:var(--surface-1);stroke:var(--line);stroke-width:1;}
+          </style>
+          <!-- rangée principale -->
+          <g>
+            <rect class="pb" x="14"  y="46" width="130" height="60" rx="9"/>
+            <text class="pt" x="79"  y="72" text-anchor="middle">Réseau</text>
+            <text class="ps" x="79"  y="90" text-anchor="middle">Blitzortung</text>
+
+            <rect class="pb" x="180" y="46" width="130" height="60" rx="9"/>
+            <text class="pt" x="245" y="72" text-anchor="middle">WebSocket</text>
+            <text class="ps" x="245" y="90" text-anchor="middle">décode LZW</text>
+
+            <rect class="pb" x="346" y="46" width="130" height="60" rx="9"/>
+            <text class="pt" x="411" y="72" text-anchor="middle">Filtre anneau</text>
+            <text class="ps" x="411" y="90" text-anchor="middle">haversine ≤ R</text>
+
+            <rect class="pb" x="512" y="46" width="130" height="60" rx="9"/>
+            <text class="pt" x="577" y="72" text-anchor="middle">Clustering</text>
+            <text class="ps" x="577" y="90" text-anchor="middle">DBSCAN</text>
+
+            <rect class="pb" x="678" y="46" width="130" height="60" rx="9"/>
+            <text class="pt" x="743" y="72" text-anchor="middle">Suivi</text>
+            <text class="ps" x="743" y="90" text-anchor="middle">Kalman + hongrois</text>
+
+            <path class="pl" d="M146 76 H178"/>
+            <path class="pl" d="M312 76 H344"/>
+            <path class="pl" d="M478 76 H510"/>
+            <path class="pl" d="M644 76 H676"/>
+          </g>
+          <!-- descente vers nowcast -->
+          <path class="pl" d="M743 108 V150 H577 V172" />
+          <g>
+            <rect class="pb" x="490" y="174" width="174" height="60" rx="9"/>
+            <text class="pt" x="577" y="200" text-anchor="middle">Nowcast</text>
+            <text class="ps" x="577" y="218" text-anchor="middle">ETA · proba · jump</text>
+          </g>
+          <!-- branches -->
+          <path class="pl" d="M490 204 H300 V250" />
+          <path class="pl" d="M664 204 H820 V250" />
+          <path class="pl" d="M577 234 V268" />
+          <g>
+            <rect class="pg" x="210" y="252" width="180" height="56" rx="9"/>
+            <text class="pt" x="300" y="276" text-anchor="middle">Persistance</text>
+            <text class="ps" x="300" y="294" text-anchor="middle">SQLite</text>
+
+            <rect class="pg" x="487" y="270" width="180" height="50" rx="9"/>
+            <text class="pt" x="577" y="293" text-anchor="middle">Dashboard</text>
+            <text class="ps" x="577" y="311" text-anchor="middle">Leaflet · WebSocket</text>
+
+            <rect class="pg" x="730" y="252" width="180" height="56" rx="9"/>
+            <text class="pt" x="820" y="276" text-anchor="middle">Vérification</text>
+            <text class="ps" x="820" y="294" text-anchor="middle">POD / FAR / CSI</text>
+          </g>
+        </svg>
+        <div class="pipe-cap">Du flux brut au dashboard : 7 étages, dont la persistance et la vérification en boucle de retour.</div>
+      </div>
+
+      <div class="prose">
+        <p>La pile technique est volontairement légère :</p>
+        <table class="doc-table">
+          <thead><tr><th>Couche</th><th>Technologie</th><th>Rôle</th></tr></thead>
+          <tbody>
+            <tr><td><b>Ingestion</b></td><td class="mono">websocket-client (thread)</td><td>Réception du flux, décodage, filtrage, mise en file</td></tr>
+            <tr><td><b>Serveur</b></td><td class="mono">FastAPI · asyncio · uvicorn</td><td>API REST, WebSocket, boucle d'analyse</td></tr>
+            <tr><td><b>Calcul</b></td><td class="mono">NumPy · scikit-learn · SciPy</td><td>DBSCAN, Kalman, association optimale</td></tr>
+            <tr><td><b>Stockage</b></td><td class="mono">SQLite (WAL)</td><td>Impacts, cellules, trajectoires, prédictions</td></tr>
+            <tr><td><b>Interface</b></td><td class="mono">JS « vanilla » · Leaflet</td><td>Carte, cartes de cellules, graphes, alertes</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Principe directeur : <strong>tout le calcul vit dans l'anneau de surveillance</strong>.
+          Aucune cellule, aucune statistique n'est calculée au-delà du rayon choisi autour de la
+          position de référence (HOME) — le système reste local, rapide et lisible.
+        </p>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ 1 · SOURCE ════════════════════════════ -->
+    <section class="doc-sec" id="source">
+      <h2><span class="num">01</span>Source &amp; latence</h2>
+      <div class="sec-title">D'où viennent les éclairs, et pourquoi ils arrivent vite</div>
+
+      <h3 class="doc-h3" id="source-net">Le réseau et la localisation par temps d'arrivée</h3>
+      <div class="prose">
+        <p>
+          Blitzortung est un réseau communautaire mondial de stations qui détectent l'onde
+          radio (VLF/LF) émise par chaque éclair. Un éclair n'est pas « vu » par une station
+          isolée : il est <strong>localisé par multilatération</strong> à partir des
+          <em>temps d'arrivée</em> (TOA) du signal sur plusieurs stations. Plus de stations,
+          et mieux réparties géométriquement, donnent une position plus précise.
+        </p>
+        <p>
+          Chaque impact reçu porte un horodatage à la nanoseconde, des coordonnées, et un
+          tableau <code>sig</code> des stations détectrices (identifiant, temps, position).
+          StormCell utilise le <strong>nombre de stations</strong> — <span class="coderef">len(sig)</span> —
+          comme indicateur de qualité (le champ <code>mds</code>), exploitable pour filtrer les
+          impacts faiblement contraints.
+        </p>
+      </div>
+      <div class="callout info">
+        <div class="ct">⚠ Polarité non disponible</div>
+        <p>Le flux public renvoie <code>pol = 0</code> pour tous les impacts : la polarité (±CG)
+          n'est pas publiée. La fonctionnalité a donc été retirée plutôt que d'afficher une
+          donnée toujours nulle.</p>
+      </div>
+
+      <h3 class="doc-h3" id="source-ws">WebSocket direct &amp; décompression</h3>
+      <div class="prose">
+        <p>
+          Plutôt que le broker MQTT communautaire (qui re-publie les impacts avec
+          <strong>~122 s</strong> de retard), StormCell se connecte directement aux serveurs
+          WebSocket officiels <code>wss://wsN.blitzortung.org/</code>. Après une poignée de main
+          <code>{"a":111}</code>, les messages arrivent compressés par un LZW « maison » qu'on
+          décode à la volée (<span class="coderef">blitz_ws.decode()</span>, port du JavaScript
+          de maps.blitzortung.org). Latence mesurée : <strong>~4 à 9 s</strong>, soit l'ordre de
+          grandeur du site officiel.
+        </p>
+        <p>
+          Au démarrage, le worker <strong>sonde plusieurs endpoints</strong> en parallèle et
+          retient le plus rapide. La latence instantanée affichée dans l'en-tête est simplement
+          l'âge médian des éclairs à la réception :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \text{latence} = t_{\text{réception}} - t_{\text{éclair}}, \qquad
+           \widehat{\ell} = \operatorname{median}\big(\{\text{latence}_i\}\big) \]
+        <div class="cap">médiane glissante sur les derniers impacts mondiaux — robuste aux valeurs aberrantes</div>
+      </div>
+
+      <h3 class="doc-h3" id="source-ring">Bornage à l'anneau de surveillance</h3>
+      <div class="prose">
+        <p>
+          Dès la réception, chaque impact est projeté en distance grand-cercle depuis HOME par la
+          <strong>formule de haversine</strong>, et rejeté s'il dépasse le rayon de surveillance.
+          Cette distance, valable partout sur le globe, est le socle géométrique de tout le reste.
+        </p>
+      </div>
+      <div class="formula">
+        \[ a = \sin^2\!\frac{\Delta\varphi}{2} + \cos\varphi_1\cos\varphi_2\,\sin^2\!\frac{\Delta\lambda}{2},
+           \qquad d = 2R\,\arcsin\!\sqrt{a} \]
+        <div class="cap">\(\varphi\) latitude, \(\lambda\) longitude, \(R = 6371\) km — <span class="coderef">geo.haversine()</span></div>
+      </div>
+      <div class="callout deep">
+        <div class="ct">↳ Pour aller plus loin — flux non bloquant</div>
+        <p>Le worker réseau écrit dans une <code>queue</code> bornée (10 000) ; un drop est
+          comptabilisé si elle déborde. Une tâche <code>asyncio</code> dépile la file et diffuse
+          chaque impact aux WebSockets, pendant qu'un thread d'écriture SQLite agrège les
+          insertions par lots. Aucun <code>commit</code> par impact dans le thread réseau.</p>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ 2 · DÉTECTION ═════════════════════════ -->
+    <section class="doc-sec" id="detection">
+      <h2><span class="num">02</span>Détection des cellules</h2>
+      <div class="sec-title">Du nuage de points aux cellules orageuses</div>
+
+      <h3 class="doc-h3" id="det-dbscan">Regroupement par densité : DBSCAN en métrique sphérique</h3>
+      <div class="prose">
+        <p>
+          Une cellule orageuse est une <strong>concentration locale d'impacts</strong>. Pour les
+          isoler, StormCell utilise <strong>DBSCAN</strong> (Density-Based Spatial Clustering),
+          qui regroupe les points denses sans qu'on ait à fixer le nombre de cellules à l'avance,
+          et qui étiquette naturellement les impacts isolés comme du <em>bruit</em>.
+        </p>
+        <p>
+          DBSCAN repose sur deux paramètres : un rayon de voisinage \(\varepsilon\) et un nombre
+          minimal de voisins <code>min_samples</code>. Un point est <strong>cœur</strong> s'il a
+          au moins <code>min_samples</code> points dans son rayon \(\varepsilon\) ; les points
+          cœurs connectés forment une cellule, les points en bordure y sont rattachés, le reste
+          est du bruit. Crucialement, la distance utilisée est la <strong>haversine native</strong>
+          (et non une projection plane qui se déforme au-delà de 300 km), ce qui rend la détection
+          correcte partout :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \varepsilon_{\text{rad}} = \frac{\varepsilon_{\text{km}}}{R}, \qquad
+           p \text{ est cœur} \iff \big|\{\,q : d(p,q) \le \varepsilon\,\}\big| \ge \texttt{min\_samples} \]
+        <div class="cap"><span class="coderef">analysis._detect_clusters()</span> · métrique <code>haversine</code>, <code>algorithm="ball_tree"</code></div>
+      </div>
+      <div class="algo">
+        <div class="algo-head">DBSCAN — squelette</div>
+        <ol>
+          <li><span class="kw">pour</span> chaque point non visité <span class="cm"># parcours</span></li>
+          <li>&nbsp;&nbsp;voisins ← points à distance ≤ ε</li>
+          <li>&nbsp;&nbsp;<span class="kw">si</span> |voisins| &lt; min_samples → marquer <span class="cm">bruit</span> (provisoire)</li>
+          <li>&nbsp;&nbsp;<span class="kw">sinon</span> ouvrir une cellule et l'étendre par densité</li>
+          <li>&nbsp;&nbsp;&nbsp;&nbsp;(absorber récursivement les voisins cœurs et leurs voisins)</li>
+        </ol>
+      </div>
+      <div class="prose">
+        <p>
+          Le <strong>centroïde</strong> d'une cellule n'est pas une simple moyenne des latitudes
+          et longitudes (qui faute près du méridien ±180°) : on moyenne les coordonnées
+          cartésiennes sphériques puis on reprojette.
+        </p>
+      </div>
+      <div class="formula">
+        \[ \bar x=\tfrac1n\!\sum\cos\varphi_i\cos\lambda_i,\;\;
+           \bar y=\tfrac1n\!\sum\cos\varphi_i\sin\lambda_i,\;\;
+           \bar z=\tfrac1n\!\sum\sin\varphi_i \]
+        \[ \varphi_c=\operatorname{atan2}\!\big(\bar z,\sqrt{\bar x^2+\bar y^2}\big),\qquad
+           \lambda_c=\operatorname{atan2}(\bar y,\bar x) \]
+      </div>
+      <div class="prose">
+        <p>
+          Une variante <strong>HDBSCAN</strong> (densité variable) est disponible en option : elle
+          sépare mieux des cellules de tailles différentes au sein d'une même ligne d'orage.
+        </p>
+      </div>
+
+      <h3 class="doc-h3" id="det-grid">Micro-clustering grille : rester rapide sous un gros orage</h3>
+      <div class="prose">
+        <p>
+          Sous un orage intense, le buffer peut contenir des dizaines de milliers d'impacts, et
+          re-clusteriser tout à chaque tick devient coûteux. La parade : une
+          <strong>pré-agrégation sur grille</strong>. On regroupe d'abord les impacts dans des
+          mailles fines (≪ \(\varepsilon\)), puis on lance DBSCAN sur un <em>représentant par
+          maille</em>, en passant le nombre d'impacts comme <strong>poids</strong>
+          (<code>sample_weight</code>).
+        </p>
+        <p>
+          C'est <strong>équivalent</strong> au DBSCAN par-impact : comme la somme des poids dans
+          un voisinage \(\varepsilon\) reproduit le nombre d'impacts sous-jacents, la condition de
+          point-cœur est inchangée — mais sur bien moins de points. Mesuré au banc d'essai :
+          <strong>×6,6</strong> d'accélération à 15 000 impacts/tick, pour des cellules identiques.
+        </p>
+      </div>
+      <div class="formula">
+        \[ w_c = \big|\{\text{impacts dans la maille } c\}\big|, \qquad
+           p \text{ est cœur} \iff \!\!\sum_{q:\,d(p,q)\le\varepsilon}\!\! w_q \;\ge\; \texttt{min\_samples} \]
+        <div class="cap"><span class="coderef">analysis._label_grid_aggregated()</span> — activé au-delà de <code>micro_cluster_min_points</code></div>
+      </div>
+
+      <h3 class="doc-h3" id="det-demo">Démonstration — DBSCAN en direct</h3>
+      <div class="prose"><p>
+        Déplacez le rayon \(\varepsilon\) et le seuil <code>min_samples</code> : les points se
+        regroupent en cellules colorées, les impacts isolés deviennent du bruit (en gris).
+        Un nouveau jeu de points peut être tiré à tout moment.
+      </p></div>
+      <div class="demo" id="demo-dbscan">
+        <div class="demo-head">
+          <span class="dh-t">DBSCAN interactif</span>
+          <span class="dh-s">densité → cellules</span>
+          <span class="dh-badge">démo 1/3</span>
+        </div>
+        <canvas id="db-canvas" height="300"></canvas>
+        <div class="demo-ctrl">
+          <label>Rayon ε (px)<span class="row"><input id="db-eps" type="range" min="14" max="70" value="34"><output id="db-eps-o">34</output></span></label>
+          <label>min_samples<span class="row"><input id="db-min" type="range" min="2" max="8" value="3"><output id="db-min-o">3</output></span></label>
+          <button class="dbtn" id="db-regen">Nouveau jeu de points</button>
+        </div>
+        <div class="demo-readout" id="db-readout"></div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ 3 · SUIVI ═════════════════════════════ -->
+    <section class="doc-sec" id="suivi">
+      <h2><span class="num">03</span>Suivi des cellules</h2>
+      <div class="sec-title">Donner une identité stable et une trajectoire à chaque cellule</div>
+
+      <h3 class="doc-h3" id="suivi-assoc">Association optimale (algorithme hongrois)</h3>
+      <div class="prose">
+        <p>
+          À chaque tick, DBSCAN produit un nouveau jeu de cellules. Encore faut-il savoir
+          <strong>laquelle correspond à laquelle</strong> au tick précédent, pour conserver des
+          identifiants stables. Une association « au plus proche » (greedy) provoque des
+          inversions d'ID quand deux cellules sont proches. StormCell résout à la place le
+          <strong>problème d'affectation optimale</strong> par l'algorithme hongrois, qui
+          minimise le coût total :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \min_{\sigma}\;\sum_i C_{i,\sigma(i)}, \qquad
+           C_{i,j} = \begin{cases} d(\text{cluster}_i,\text{cellule}_j) & \text{si } d \le g_{ij}\\[2pt] \infty & \text{sinon}\end{cases} \]
+        <div class="cap"><span class="coderef">scipy.optimize.linear_sum_assignment</span> sur une matrice de coûts haversine</div>
+      </div>
+      <div class="prose">
+        <p>
+          Le <strong>gating</strong> \(g_{ij}\) est <em>adaptatif à la vitesse</em> : une cellule
+          rapide a le droit de s'être déplacée davantage entre deux ticks. On autorise donc un
+          saut proportionnel à sa vitesse et au temps écoulé :
+        </p>
+      </div>
+      <div class="formula">
+        \[ g_{ij} = 2\varepsilon + \frac{v_j}{3600}\,\Delta t_{ij} \]
+        <div class="cap">\(v_j\) en km/h, \(\Delta t\) en s → terme en km · <span class="coderef">analysis._associate()</span></div>
+      </div>
+
+      <h3 class="doc-h3" id="suivi-kalman">Filtre de Kalman à vitesse quasi-constante</h3>
+      <div class="prose">
+        <p>
+          Mesurer la vitesse d'une cellule en dérivant brutalement deux positions est très
+          bruité (le centroïde « gigote » quand la forme change). On utilise un
+          <strong>filtre de Kalman</strong> à vitesse constante, d'état
+          \(\mathbf{x}=[x,\,y,\,v_x,\,v_y]^\top\) dans un repère plan local fixé à la naissance de
+          la cellule. Il lisse la trajectoire <em>et</em> fournit une covariance \(P\) — donc une
+          incertitude principielle, pas un RMS refait à zéro chaque tick.
+        </p>
+        <p>À chaque tick, deux étapes. <strong>Prédiction</strong> (on avance de \(\Delta t\)) :</p>
+      </div>
+      <div class="formula">
+        \[ \mathbf{x}^- = F\mathbf{x}, \qquad P^- = FPF^\top + Q \]
+        \[ F=\begin{pmatrix}1&0&\Delta t&0\\0&1&0&\Delta t\\0&0&1&0\\0&0&0&1\end{pmatrix},\quad
+           Q=q\begin{pmatrix}\tfrac{\Delta t^4}{4}&0&\tfrac{\Delta t^3}{2}&0\\0&\tfrac{\Delta t^4}{4}&0&\tfrac{\Delta t^3}{2}\\\tfrac{\Delta t^3}{2}&0&\Delta t^2&0\\0&\tfrac{\Delta t^3}{2}&0&\Delta t^2\end{pmatrix} \]
+        <div class="cap">modèle « bruit blanc d'accélération » de densité \(q\) — <span class="coderef">tracking.CVKalman.predict()</span></div>
+      </div>
+      <div class="prose"><p><strong>Mise à jour</strong> avec la mesure du centroïde \(\mathbf{z}=(z_x,z_y)\) :</p></div>
+      <div class="formula">
+        \[ \mathbf{y}=\mathbf{z}-H\mathbf{x}^-,\quad S=HP^-H^\top+R,\quad K=P^-H^\top S^{-1} \]
+        \[ \mathbf{x}=\mathbf{x}^-+K\mathbf{y},\qquad P=(I-KH)\,P^- \]
+        <div class="cap">\(H=\big(\begin{smallmatrix}1&0&0&0\\0&1&0&0\end{smallmatrix}\big)\), \(R=\sigma_m^2 I\) (bruit du centroïde). L'incertitude de position diffusée est \(\sigma_p=\sqrt{\tfrac12(P_{11}+P_{22})}\).</div>
+      </div>
+
+      <h3 class="doc-h3" id="suivi-lineage">Lignée : scissions et fusions</h3>
+      <div class="prose">
+        <p>
+          La convection réelle n'est pas linéaire : une cellule peut se <strong>scinder</strong>
+          en deux, ou deux cellules <strong>fusionner</strong>. StormCell étiquette ces
+          événements : une nouvelle cellule née à côté d'une cellule mère reçoit un
+          <code>parent_id</code> (split) ; une cellule qui absorbe des voisines non rematchées
+          enregistre leur lignée dans <code>merged_from</code> (merge). Le suivi reste cohérent
+          au lieu de créer des identités fantômes.
+        </p>
+      </div>
+      <div class="callout deep">
+        <div class="ct">↳ Persistance fade-out</div>
+        <p>Une cellule absente d'un tick (creux de détection) ne disparaît pas immédiatement :
+          elle survit quelques ticks en « fantôme », sa confiance décroissant à chaque absence,
+          jusqu'à <code>max_track_misses</code>. Cela évite le clignotement des cellules
+          intermittentes.</p>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ 4 · NOWCAST ═══════════════════════════ -->
+    <section class="doc-sec" id="nowcast">
+      <h2><span class="num">04</span>Nowcast &amp; sévérité</h2>
+      <div class="sec-title">Prédire l'arrivée, l'intensification et la dangerosité</div>
+
+      <h3 class="doc-h3" id="now-flash">Strokes → flashs : compter ce qui compte</h3>
+      <div class="prose">
+        <p>
+          Blitzortung émet des <em>strokes</em> (décharges individuelles) ; un <em>flash</em>
+          (éclair) en regroupe souvent plusieurs, très proches en temps et en espace. Le vrai
+          <strong>taux d'éclairs par minute</strong> — base du détecteur d'intensification — doit
+          se compter en flashs, pas en strokes. On chaîne donc les strokes :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \text{stroke rejoint un flash} \iff \Delta t \le 0{,}5\,\text{s} \;\wedge\; d \le 10\,\text{km} \]
+        <div class="cap">fenêtre glissante O(n·k), strictement équivalente à la version naïve — <span class="coderef">analysis._count_flashes()</span></div>
+      </div>
+
+      <h3 class="doc-h3" id="now-jump">Lightning jump : le signal d'orage sévère</h3>
+      <div class="prose">
+        <p>
+          Une <strong>flambée soudaine du taux d'éclairs</strong> précède souvent le temps sévère
+          (grêle, rafales, tornade) de l'ordre de 10 à 20 minutes — c'est le <em>lightning jump</em>
+          (Schultz et al., 2009). StormCell implémente le critère canonique <strong>2σ</strong> : on
+          calcule la dérivée du taux de flashs sur une courte fenêtre (DFRDT, ~2 min), et on la
+          compare à l'écart-type de cette dérivée sur un fond plus long (~12 min).
+        </p>
+      </div>
+      <div class="formula">
+        \[ \mathrm{DFRDT}(t)=\frac{R(t)-R(t-L)}{L/60},\qquad
+           \sigma=\operatorname{std}\big(\mathrm{DFRDT}_{\text{fond}}\big) \]
+        \[ \text{jump} \iff \frac{\mathrm{DFRDT}(t_{\text{now}})}{\sigma}\ge 2
+           \;\wedge\; R(t_{\text{now}})\ge 10\ \text{flashs/min} \]
+        <div class="cap">\(L \approx 120\) s · plancher de taux pour éviter les faux positifs sur orage faible — <span class="coderef">tracking.lightning_jump()</span></div>
+      </div>
+      <div class="demo" id="demo-jump">
+        <div class="demo-head">
+          <span class="dh-t">Lightning jump</span>
+          <span class="dh-s">dérivée du taux vs bande 2σ</span>
+          <span class="dh-badge">démo 2/3</span>
+        </div>
+        <canvas id="jp-canvas" height="260"></canvas>
+        <div class="demo-ctrl">
+          <label>Ampleur de la flambée<span class="row"><input id="jp-amp" type="range" min="0" max="100" value="60"><output id="jp-amp-o">60</output></span></label>
+          <button class="dbtn" id="jp-replay">▶ Rejouer</button>
+        </div>
+        <div class="demo-readout" id="jp-readout"></div>
+      </div>
+
+      <h3 class="doc-h3" id="now-eta">ETA au bord &amp; probabilité de coup</h3>
+      <div class="prose">
+        <p>
+          Ce qui compte n'est pas quand le <em>centre</em> de la cellule atteint HOME, mais quand
+          la <strong>foudre entre dans l'anneau</strong> autour de HOME. On résout donc l'instant
+          où la cellule (position \(C\), vitesse \(V\)) pénètre le disque de rayon effectif
+          \(r_{\text{eff}} = r_{\text{cellule}} + r_{\text{anneau}}\) centré sur HOME \(H\) :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \lVert (C-H) + tV\rVert^2 = r_{\text{eff}}^2 \;\Longrightarrow\;
+           a t^2 + b t + c = 0 \]
+        \[ a=\lVert V\rVert^2,\quad b=2\,(C-H)\!\cdot\!V,\quad c=\lVert C-H\rVert^2 - r_{\text{eff}}^2 \]
+        <div class="cap">ETA-bord = plus petite racine \(\ge 0\), en minutes — <span class="coderef">analysis._eta_to_radius()</span>. À comparer à l'ETA-centroïde \(t^\star=\frac{(H-C)\cdot V}{\lVert V\rVert^2}\).</div>
+      </div>
+      <div class="prose">
+        <p>
+          La <strong>probabilité de coup</strong> dans l'horizon de nowcast combine la distance
+          d'approche la plus proche \(d_{\min}\) et l'incertitude de position \(\sigma_p\) issue
+          du Kalman : on considère un « coup » si la distance passe sous \(r_{\text{eff}}\), avec
+          une marge gaussienne, et seulement si l'approche a lieu dans l'horizon.
+        </p>
+      </div>
+      <div class="formula">
+        \[ z=\frac{r_{\text{eff}}-d_{\min}}{\sigma_p},\qquad
+           P_{\text{coup}}=\Phi(z)\ \text{ si } 0\le \text{ETA}\le \text{horizon, sinon }0 \]
+        <div class="cap">\(\Phi\) = fonction de répartition normale · <span class="coderef">tracking.strike_probability()</span></div>
+      </div>
+      <div class="prose"><p>
+        Faites foncer une cellule vers HOME : l'anneau d'alerte, le point d'approche le plus
+        proche, le cône d'incertitude et l'ETA-bord se mettent à jour en direct.
+      </p></div>
+      <div class="demo" id="demo-eta">
+        <div class="demo-head">
+          <span class="dh-t">Cône d'ETA</span>
+          <span class="dh-s">approche, incertitude, heure d'arrivée</span>
+          <span class="dh-badge">démo 3/3</span>
+        </div>
+        <canvas id="et-canvas" height="320"></canvas>
+        <div class="demo-ctrl">
+          <label>Cap de la cellule<span class="row"><input id="et-head" type="range" min="0" max="359" value="232"><output id="et-head-o">232°</output></span></label>
+          <label>Vitesse (km/h)<span class="row"><input id="et-spd" type="range" min="10" max="90" value="45"><output id="et-spd-o">45</output></span></label>
+          <label>Incertitude σ (km)<span class="row"><input id="et-sig" type="range" min="2" max="30" value="9"><output id="et-sig-o">9</output></span></label>
+        </div>
+        <div class="demo-readout" id="et-readout"></div>
+      </div>
+
+      <h3 class="doc-h3" id="now-sev">Indice de sévérité 0–5</h3>
+      <div class="prose">
+        <p>
+          Pour hiérarchiser les cellules d'un coup d'œil (code couleur sur la carte), un score
+          composite agrège le taux d'éclairs \(f\), le rayon \(r\), la densité \(\rho=N/(\pi r^2)\),
+          la tendance et le jump :
+        </p>
+      </div>
+      <div class="formula">
+        \[ S = 2{,}5\,\min\!\Big(\tfrac{f}{20},1\Big) + \min\!\Big(\tfrac{r}{40},1\Big)
+           + 0{,}5\,\min\!\Big(\tfrac{\rho}{0{,}5},1\Big) + 0{,}5\,[\text{croissant}] + 0{,}5\,[\text{jump}] \]
+        <div class="cap">borné à 5 · <span class="coderef">tracking.severity_index()</span></div>
+      </div>
+      <div class="callout deep">
+        <div class="ct">↳ Préavis pour les jeunes cellules (a priori régional)</div>
+        <p>Une cellule qui vient de naître n'a pas encore de vitesse propre (le Kalman a besoin de
+          ≥ 2 ticks) — donc pas d'ETA, au pire moment. StormCell lui prête alors la
+          <strong>vitesse médiane des cellules établies voisines</strong> (les orages d'une région
+          partagent l'advection) pour un préavis immédiat, marqué « provisoire » et volontairement
+          peu alertant tant que son propre suivi n'est pas confirmé.</p>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ 5 · PREUVE ════════════════════════════ -->
+    <section class="doc-sec" id="preuve">
+      <h2><span class="num">05</span>Preuve &amp; performance</h2>
+      <div class="sec-title">Mesurer la fiabilité, et tenir la charge</div>
+
+      <h3 class="doc-h3" id="preuve-verif">Vérification : le système se note lui-même</h3>
+      <div class="prose">
+        <p>
+          Une prédiction n'a de valeur que si on la confronte au réel. StormCell
+          <strong>journalise chaque alerte émise</strong> (ETA, probabilité) avec son horodatage,
+          puis vérifie a posteriori si la foudre est effectivement entrée dans l'anneau d'alerte.
+          On en tire la table de contingence et les scores classiques de prévision :
+        </p>
+      </div>
+      <div class="formula">
+        \[ \text{POD}=\frac{H}{H+M},\qquad \text{FAR}=\frac{F}{H+F},\qquad \text{CSI}=\frac{H}{H+M+F} \]
+        <div class="cap">\(H\) détections justes, \(M\) ratés, \(F\) fausses alertes · <span class="coderef">verification.evaluate()</span></div>
+      </div>
+      <div class="prose">
+        <p>
+          <strong>POD</strong> (probabilité de détection) = part des arrivées réelles bien
+          anticipées ; <strong>FAR</strong> (taux de fausses alertes) = part des alertes qui
+          n'ont rien donné ; <strong>CSI</strong> (critical success index) combine les deux en un
+          seul score. Le panneau « Fiabilité des prédictions » de l'app les affiche sur la période
+          choisie, avec l'erreur d'ETA et le préavis moyen.
+        </p>
+      </div>
+
+      <h3 class="doc-h3" id="preuve-perf">Persistance, décimation, robustesse</h3>
+      <div class="prose">
+        <p>
+          Tout est conservé en <strong>SQLite</strong> (mode WAL, écritures par lots) : impacts,
+          cellules, points de trajectoire, prédictions, cache de géocodage. Plusieurs mécanismes
+          gardent l'ensemble fluide et borné dans le temps :
+        </p>
+        <table class="doc-table">
+          <thead><tr><th>Mécanisme</th><th>Principe</th><th>Référence</th></tr></thead>
+          <tbody>
+            <tr><td><b>Calcul hors boucle</b></td><td>DBSCAN + Kalman exécutés dans un thread pool → l'event-loop reste libre</td><td class="mono">run_in_executor</td></tr>
+            <tr><td><b>Points chauds vectorisés</b></td><td>comptage de flashs en O(n·k), matrice de coûts haversine en NumPy</td><td class="mono">_count_flashes, _associate</td></tr>
+            <tr><td><b>Historique décimé</b></td><td>au-delà d'un seuil, agrégation sur grille (≈ 8000 points) au lieu de centaines de milliers de lignes</td><td class="mono">query_range_decimated</td></tr>
+            <tr><td><b>Rétention</b></td><td>purge périodique + index composite + checkpoint WAL + VACUUM optionnel</td><td class="mono">db.maintain()</td></tr>
+            <tr><td><b>Métriques de débit</b></td><td>file (occupée/max/drops), msg/s, remplissage du tampon, durée de recalcul</td><td class="mono">/api/stats</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Une commande de banc d'essai (<span class="coderef">blitz bench --compare</span>) rejoue
+          un orage synthétique lourd et chronomètre le pipeline, ce qui permet de détecter toute
+          régression de performance et de quantifier le gain du micro-clustering grille.
+        </p>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ LIMITES ═══════════════════════════════ -->
+    <section class="doc-sec" id="limites">
+      <h2><span class="num">06</span>Limites &amp; honnêteté</h2>
+      <div class="sec-title">Ce que le système ne fait pas (encore)</div>
+      <div class="prose">
+        <ul class="lim">
+          <li><strong>Dépendance à la détection Blitzortung.</strong> Une cellule peu électrique
+            ou mal couverte par le réseau sera sous-représentée : on ne « voit » que la foudre,
+            pas la pluie ni la grêle directement.</li>
+          <li><strong>Pas de fusion radar.</strong> Un overlay radar (RainViewer) existe à titre
+            visuel, mais n'est pas intégré au nowcast — la prédiction repose uniquement sur la
+            dynamique des éclairs.</li>
+          <li><strong>Probabilités non encore calibrées.</strong> La proba de coup est analytique
+            (gaussienne) ; tant qu'on n'a pas mesuré sa <em>calibration</em> (un « 70 % » survient-il
+            vraiment 7 fois sur 10 ?), elle indique une tendance, pas une fréquence garantie.</li>
+          <li><strong>Mouvement à vitesse constante.</strong> Le Kalman suppose une advection quasi
+            rectiligne sur l'horizon ; un virage marqué de la cellule n'est extrapolé qu'avec retard.</li>
+          <li><strong>Outil personnel, en local.</strong> Pas d'authentification ni de garantie de
+            service : c'est un instrument d'observation, pas une source d'alerte officielle.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════ GLOSSAIRE ═════════════════════════════ -->
+    <section class="doc-sec" id="glossaire">
+      <h2><span class="num">07</span>Glossaire</h2>
+      <div class="sec-title">Le vocabulaire en une ligne</div>
+      <table class="doc-table">
+        <tbody>
+          <tr><td class="mono">stroke / flash</td><td>décharge individuelle / éclair regroupant plusieurs strokes proches</td></tr>
+          <tr><td class="mono">TOA</td><td>Time Of Arrival — localisation par temps d'arrivée du signal sur les stations</td></tr>
+          <tr><td class="mono">mds</td><td>nombre de stations ayant détecté l'impact (indicateur de qualité)</td></tr>
+          <tr><td class="mono">DBSCAN / HDBSCAN</td><td>clustering par densité (seuil fixe / densité variable)</td></tr>
+          <tr><td class="mono">ε / min_samples</td><td>rayon de voisinage / nombre minimal de voisins pour un point-cœur</td></tr>
+          <tr><td class="mono">filtre de Kalman</td><td>estimateur récursif qui lisse position et vitesse + fournit une covariance</td></tr>
+          <tr><td class="mono">DFRDT</td><td>Derivative of Flash Rate Difference Time — dérivée du taux d'éclairs</td></tr>
+          <tr><td class="mono">lightning jump</td><td>flambée du taux d'éclairs précédant le temps sévère (critère 2σ)</td></tr>
+          <tr><td class="mono">ETA-bord</td><td>heure d'arrivée de la foudre dans l'anneau (vs ETA du centroïde)</td></tr>
+          <tr><td class="mono">POD / FAR / CSI</td><td>scores de prévision : détection / fausses alertes / indice combiné</td></tr>
+          <tr><td class="mono">anneau</td><td>rayon autour de HOME ; tout le calcul vit à l'intérieur</td></tr>
+        </tbody>
+      </table>
+
+      <div class="doc-foot">
+        StormCell — moniteur d'orages &amp; nowcasting. <a href="/">← Retour à l'application</a>.
+        <br>Cette page décrit le fonctionnement réel du code ; les noms entre crochets renvoient
+        aux fonctions et fichiers du projet.
+      </div>
+    </section>
+  </main>
+</div>
+
+</body>
+</html>
